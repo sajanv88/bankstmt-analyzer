@@ -20,21 +20,27 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/google/uuid"
+	taskq "github.com/Nuvraxis/taskQ"
+	"github.com/Nuvraxis/taskQ/pgbroker"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sajanv88/bankstmt-analyzer/internal/config"
 	"github.com/sajanv88/bankstmt-analyzer/internal/db"
 	apihttp "github.com/sajanv88/bankstmt-analyzer/internal/http"
+	"github.com/sajanv88/bankstmt-analyzer/internal/llm"
 	"github.com/sajanv88/bankstmt-analyzer/internal/logging"
 	"github.com/sajanv88/bankstmt-analyzer/internal/migrate"
+	"github.com/sajanv88/bankstmt-analyzer/internal/ocr"
+	"github.com/sajanv88/bankstmt-analyzer/internal/pipeline"
 	"github.com/sajanv88/bankstmt-analyzer/internal/storage"
+	"github.com/sajanv88/bankstmt-analyzer/prompts"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
@@ -130,9 +136,6 @@ func run(args []string, stdout *os.File) error {
 		logger.InfoContext(ctx, "no run mode selected, exiting")
 		return nil
 	}
-	if opts.runWorker {
-		return errors.New("worker mode requires the analysis pipeline, which is not part of this build")
-	}
 
 	blobs, err := storage.NewLocal(cfg.StorageDir)
 	if err != nil {
@@ -142,6 +145,18 @@ func run(args []string, stdout *os.File) error {
 
 	store := db.NewStore(pool)
 
+	// The broker is built in both roles: the API needs it to enqueue and
+	// the worker to consume. It borrows the same pool and never closes it.
+	broker := pgbroker.New(pool,
+		pgbroker.WithLeaseDuration(cfg.Queue.LeaseDuration),
+		pgbroker.WithPollInterval(cfg.Queue.PollInterval),
+	)
+
+	analysis, err := newPipeline(cfg, logger, store, blobs, broker)
+	if err != nil {
+		return err
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 	if opts.runAPI {
 		if err := startAPI(gctx, g, apihttp.Deps{
@@ -150,10 +165,13 @@ func run(args []string, stdout *os.File) error {
 			DB:       store,
 			Store:    store,
 			Blobs:    blobs,
-			Enqueuer: unavailableEnqueuer{},
+			Enqueuer: analysis,
 		}); err != nil {
 			return err
 		}
+	}
+	if opts.runWorker {
+		g.Go(func() error { return analysis.Run(gctx) })
 	}
 
 	if err := g.Wait(); err != nil {
@@ -205,12 +223,36 @@ func startAPI(ctx context.Context, g *errgroup.Group, deps apihttp.Deps) error {
 	return nil
 }
 
-// unavailableEnqueuer stands in for the analysis pipeline, which is not
-// part of this build. The upload handler treats an enqueue failure as a
-// stored-but-unqueued upload: it records the upload as failed and answers
-// 503, rather than accepting work nothing will ever pick up.
-type unavailableEnqueuer struct{}
+// newPipeline builds the analysis saga and the upstream clients it drives.
+//
+// It is constructed even when only the API is running: the API is the
+// producer side of the same saga, and Enqueue is how an accepted upload
+// reaches the queue.
+func newPipeline(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *db.Store,
+	blobs storage.BlobStore,
+	broker taskq.Broker,
+) (*pipeline.Pipeline, error) {
+	ocrClient, err := ocr.NewClient(cfg.OCR)
+	if err != nil {
+		return nil, err
+	}
+	llmClient, err := llm.NewClient(cfg.OpenAI, prompts.AnalysisSystem)
+	if err != nil {
+		return nil, err
+	}
 
-func (unavailableEnqueuer) Enqueue(context.Context, uuid.UUID) error {
-	return errors.New("the analysis pipeline is not available in this build")
+	return pipeline.New(pipeline.Deps{
+		Broker:  broker,
+		Store:   store,
+		Blobs:   blobs,
+		OCR:     ocrClient,
+		LLM:     llmClient,
+		Logger:  logger,
+		Queue:   cfg.Queue,
+		Worker:  cfg.Worker,
+		Secrets: cfg.Secrets(),
+	})
 }

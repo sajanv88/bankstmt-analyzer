@@ -17,8 +17,16 @@ type Querier interface {
 	BalanceOverTime(ctx context.Context, arg BalanceOverTimeParams) ([]BalanceOverTimeRow, error)
 	// Spending only: an income category is not a slice of a spending pie.
 	CategoryBreakdown(ctx context.Context, arg CategoryBreakdownParams) ([]CategoryBreakdownRow, error)
+	CreateAnalysis(ctx context.Context, arg CreateAnalysisParams) (Analysis, error)
+	// Bulk-loaded rather than inserted one at a time: a year of statements is
+	// easily a few thousand rows, and COPY moves them in a single round trip
+	// inside the analyze step's transaction.
+	CreateTransactions(ctx context.Context, arg []CreateTransactionsParams) (int64, error)
 	CreateUpload(ctx context.Context, arg CreateUploadParams) (Upload, error)
 	CreateUploadFile(ctx context.Context, arg CreateUploadFileParams) (UploadFile, error)
+	// Transactions cascade from the analysis, so this is the whole of the
+	// analyze step's compensation.
+	DeleteAnalysisByUpload(ctx context.Context, uploadID uuid.UUID) (int64, error)
 	EssentialVsDiscretionary(ctx context.Context, arg EssentialVsDiscretionaryParams) ([]EssentialVsDiscretionaryRow, error)
 	GetAnalysisByUpload(ctx context.Context, uploadID uuid.UUID) (Analysis, error)
 	GetAnalysisIDByUpload(ctx context.Context, uploadID uuid.UUID) (uuid.UUID, error)
@@ -35,6 +43,7 @@ type Querier interface {
 	ListUploadFiles(ctx context.Context, uploadID uuid.UUID) ([]UploadFile, error)
 	MonthlyByCategory(ctx context.Context, arg MonthlyByCategoryParams) ([]MonthlyByCategoryRow, error)
 	MonthlyIncomeVsSpending(ctx context.Context, arg MonthlyIncomeVsSpendingParams) ([]MonthlyIncomeVsSpendingRow, error)
+	SetUploadFileOCR(ctx context.Context, arg SetUploadFileOCRParams) error
 	SetUploadStatus(ctx context.Context, arg SetUploadStatusParams) (Upload, error)
 	WindowSummary(ctx context.Context, arg WindowSummaryParams) (WindowSummaryRow, error)
 }

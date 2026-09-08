@@ -55,6 +55,10 @@ type AzureOCR struct {
 	Endpoint string `env:"ENDPOINT,required,notEmpty"`
 	APIKey   string `env:"API_KEY,required,notEmpty"`
 	Model    string `env:"MODEL,required,notEmpty"`
+	// Path is appended to Endpoint to form the OCR URL. It is
+	// configurable because Azure has moved model-serving routes before,
+	// and a changed route should not need a new build.
+	Path string `env:"PATH" envDefault:"/providers/mistral/azure/ocr"`
 	// Timeout bounds a single OCR call for one PDF.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"5m"`
 }

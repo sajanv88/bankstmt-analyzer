@@ -109,3 +109,57 @@ func (s *Store) CreateUploadWithFiles(ctx context.Context, uploadID uuid.UUID, f
 func IsNotFound(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
+
+// NewAnalysis is one complete analysis ready to be written: the analysis
+// row itself and the transactions flattened out of it.
+type NewAnalysis struct {
+	Analysis     CreateAnalysisParams
+	Transactions []CreateTransactionsParams
+}
+
+// ReplaceAnalysis writes an upload's analysis and its transactions in a
+// single transaction, discarding whatever analysis was recorded for that
+// upload before.
+//
+// Replacing rather than inserting is what makes the analyze step safe to
+// re-run. taskQ delivers at least once, so the step can execute twice for
+// one upload; a plain insert would either violate the unique constraint on
+// upload_id or double every transaction row.
+func (s *Store) ReplaceAnalysis(ctx context.Context, in NewAnalysis) (Analysis, error) {
+	var analysis Analysis
+
+	err := s.InTx(ctx, func(q *Queries) error {
+		if _, err := q.DeleteAnalysisByUpload(ctx, in.Analysis.UploadID); err != nil {
+			return fmt.Errorf("db: delete previous analysis: %w", err)
+		}
+
+		var err error
+		analysis, err = q.CreateAnalysis(ctx, in.Analysis)
+		if err != nil {
+			return fmt.Errorf("db: insert analysis: %w", err)
+		}
+		if len(in.Transactions) == 0 {
+			return nil
+		}
+
+		// The analysis id is only known now, so it is stamped onto the
+		// rows here rather than being the caller's problem.
+		rows := make([]CreateTransactionsParams, len(in.Transactions))
+		for i, txn := range in.Transactions {
+			txn.AnalysisID = analysis.ID
+			rows[i] = txn
+		}
+		copied, err := q.CreateTransactions(ctx, rows)
+		if err != nil {
+			return fmt.Errorf("db: copy transactions: %w", err)
+		}
+		if copied != int64(len(rows)) {
+			return fmt.Errorf("db: copied %d of %d transactions", copied, len(rows))
+		}
+		return nil
+	})
+	if err != nil {
+		return Analysis{}, err
+	}
+	return analysis, nil
+}

@@ -9,12 +9,12 @@ drives the analysis pipeline.
 
 ## Status
 
-The API is complete: uploads, status and visualization all work, with
-Swagger served outside production. The OCR and LLM clients and the taskQ
-pipeline that drives them are not in this build yet, so an accepted upload
-cannot be analysed: `POST /api/v1/uploads` stores the files, records the
-upload as `failed` with the reason `enqueue: ...`, and answers 503 rather
-than accepting work nothing will pick up.
+Functionally complete: uploads are OCR'd, analysed and served. What remains
+is packaging — the Dockerfile, the Helm chart and the CI workflows.
+
+`prompts/analysis_system.md` still holds a placeholder prompt. Replace it
+with the real one before pointing this at a live deployment; it is embedded
+at build time, so changing it means rebuilding.
 
 ## Requirements
 
@@ -50,6 +50,10 @@ file. Copy `.env.example` to `.env` and fill it in.
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `MIGRATE_ON_START` | `false` | Apply migrations during startup; same effect as `--migrate`. |
 | `POSTGRES_PORT` | `5432` | Host port `docker-compose` publishes Postgres on. |
+| `AZURE_OCR_PATH` | `/providers/mistral/azure/ocr` | Route appended to the OCR endpoint. |
+| `WORKER_CONCURRENCY` | `4` | Saga hops processed in parallel. |
+| `WORKER_MAX_RETRY` | `3` | Redeliveries per saga step, so 4 attempts each. |
+| `TASKQ_LEASE_DURATION` | `15m` | Must exceed the slowest single step, or an in-flight message is redelivered while still being worked on. |
 
 `.env.example` lists the remaining tunables (Azure timeouts, HTTP
 timeouts, CORS origins, worker concurrency and retry budget, queue lease
@@ -166,6 +170,37 @@ curl -s localhost:8080/api/v1/uploads/nope/status
 #  "request_id":"...","invalid_params":[{"name":"id","reason":"not a valid uuid"}]}
 ```
 
+## The analysis pipeline
+
+The worker runs a [taskQ](https://github.com/Nuvraxis/taskQ) saga over the
+Postgres broker. Each step is one hop through the queue, so a worker
+restart resumes where the run left off rather than starting over.
+
+| Step | Does | Compensation |
+| --- | --- | --- |
+| `mark_processing` | Moves the upload out of `pending` and clears any stale failure reason. | — |
+| `ocr` | Calls Azure OCR for each file and stores its markdown and page count. Files that already have output are skipped. | — |
+| `analyze` | Builds the `--- STATEMENT n ---` message, calls Azure OpenAI at temperature 0 with a JSON response format, validates the reply, and writes the analysis and its transactions in one database transaction. | Deletes the analysis; transactions cascade. |
+| `mark_completed` | Marks the upload `completed`. | — |
+
+Any failure marks the upload `failed` with `failure_reason` set to
+`"<step>: <reason>"`, after compensation has unwound whatever succeeded.
+Configured secrets are stripped from that message before it is logged,
+carried through the queue, or stored.
+
+The whole workflow is idempotent per upload id, so re-running it is safe:
+OCR is skipped for files that already have output, and the analysis is
+replaced rather than appended.
+
+Two things worth knowing about the retry model. taskQ's retry budget is
+per hop (`WORKER_MAX_RETRY`, four attempts by default) and it applies to
+every failure, so a permanently unusable model reply is retried before the
+run gives up — the clients classify errors as retryable or not, and that
+classification is logged, but taskQ has no way to act on it. And
+`TASKQ_LEASE_DURATION` must stay comfortably above the slowest step: a
+lease that expires mid-OCR gets the message redelivered to a second
+worker while the first is still working.
+
 ## Swagger
 
 Served at <http://localhost:8080/swagger/index.html> whenever `ENV` is not
@@ -209,6 +244,9 @@ cmd/api            entrypoint: flags, wiring, lifecycle
 internal/config    environment-driven configuration
 internal/db        pgx pool, transaction helpers, sqlc-generated queries
 internal/http      chi router, middleware, handlers, RFC 7807 responses
+internal/ocr       Azure Mistral OCR client
+internal/llm       Azure OpenAI client and the response contract
+internal/pipeline  the taskQ saga, its steps and their compensations
 internal/logging   slog JSON logger construction
 internal/migrate   embedded goose migration runner
 internal/storage   BlobStore interface and its local-disk implementation

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -119,7 +120,7 @@ func TestStartAPIShutsDownOnContextCancel(t *testing.T) {
 		DB:       okPinger{},
 		Store:    stubStore{},
 		Blobs:    stubBlobs{},
-		Enqueuer: unavailableEnqueuer{},
+		Enqueuer: stubEnqueuer{},
 	}))
 
 	requireServing(t, "http://"+addr+"/healthz")
@@ -154,6 +155,10 @@ func (okPinger) Ping(context.Context) error { return nil }
 type stubStore struct{ apihttp.UploadStore }
 
 type stubBlobs struct{ storage.BlobStore }
+
+type stubEnqueuer struct{}
+
+func (stubEnqueuer) Enqueue(context.Context, uuid.UUID) error { return nil }
 
 // freeAddr reserves an ephemeral port, then releases it so the server under
 // test can bind it.

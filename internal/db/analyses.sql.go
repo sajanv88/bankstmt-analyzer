@@ -9,7 +9,101 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const createAnalysis = `-- name: CreateAnalysis :one
+INSERT INTO analyses (
+    id, upload_id, currency, period_start, period_end,
+    monthly_summary, category_totals, recurring_payments, anomalies,
+    key_insights, savings_plan, chart_present, chart_forecast, raw_llm_json
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9,
+    $10,
+    $11,
+    $12,
+    $13,
+    $14
+)
+RETURNING id, upload_id, currency, period_start, period_end, monthly_summary, category_totals, recurring_payments, anomalies, key_insights, savings_plan, chart_present, chart_forecast, raw_llm_json, created_at
+`
+
+type CreateAnalysisParams struct {
+	ID                uuid.UUID   `json:"id"`
+	UploadID          uuid.UUID   `json:"upload_id"`
+	Currency          string      `json:"currency"`
+	PeriodStart       pgtype.Date `json:"period_start"`
+	PeriodEnd         pgtype.Date `json:"period_end"`
+	MonthlySummary    []byte      `json:"monthly_summary"`
+	CategoryTotals    []byte      `json:"category_totals"`
+	RecurringPayments []byte      `json:"recurring_payments"`
+	Anomalies         []byte      `json:"anomalies"`
+	KeyInsights       []byte      `json:"key_insights"`
+	SavingsPlan       []byte      `json:"savings_plan"`
+	ChartPresent      []byte      `json:"chart_present"`
+	ChartForecast     []byte      `json:"chart_forecast"`
+	RawLlmJson        []byte      `json:"raw_llm_json"`
+}
+
+func (q *Queries) CreateAnalysis(ctx context.Context, arg CreateAnalysisParams) (Analysis, error) {
+	row := q.db.QueryRow(ctx, createAnalysis,
+		arg.ID,
+		arg.UploadID,
+		arg.Currency,
+		arg.PeriodStart,
+		arg.PeriodEnd,
+		arg.MonthlySummary,
+		arg.CategoryTotals,
+		arg.RecurringPayments,
+		arg.Anomalies,
+		arg.KeyInsights,
+		arg.SavingsPlan,
+		arg.ChartPresent,
+		arg.ChartForecast,
+		arg.RawLlmJson,
+	)
+	var i Analysis
+	err := row.Scan(
+		&i.ID,
+		&i.UploadID,
+		&i.Currency,
+		&i.PeriodStart,
+		&i.PeriodEnd,
+		&i.MonthlySummary,
+		&i.CategoryTotals,
+		&i.RecurringPayments,
+		&i.Anomalies,
+		&i.KeyInsights,
+		&i.SavingsPlan,
+		&i.ChartPresent,
+		&i.ChartForecast,
+		&i.RawLlmJson,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteAnalysisByUpload = `-- name: DeleteAnalysisByUpload :execrows
+DELETE FROM analyses WHERE upload_id = $1
+`
+
+// Transactions cascade from the analysis, so this is the whole of the
+// analyze step's compensation.
+func (q *Queries) DeleteAnalysisByUpload(ctx context.Context, uploadID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAnalysisByUpload, uploadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const getAnalysisByUpload = `-- name: GetAnalysisByUpload :one
 SELECT id, upload_id, currency, period_start, period_end, monthly_summary, category_totals, recurring_payments, anomalies, key_insights, savings_plan, chart_present, chart_forecast, raw_llm_json, created_at FROM analyses WHERE upload_id = $1

@@ -17,3 +17,9 @@ RETURNING *;
 SELECT * FROM upload_files
 WHERE upload_id = sqlc.arg(upload_id)
 ORDER BY position;
+
+-- name: SetUploadFileOCR :exec
+UPDATE upload_files
+SET ocr_markdown = sqlc.arg(ocr_markdown),
+    page_count   = sqlc.arg(page_count)
+WHERE id = sqlc.arg(id);

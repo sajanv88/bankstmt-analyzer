@@ -97,3 +97,21 @@ func (q *Queries) ListUploadFiles(ctx context.Context, uploadID uuid.UUID) ([]Up
 	}
 	return items, nil
 }
+
+const setUploadFileOCR = `-- name: SetUploadFileOCR :exec
+UPDATE upload_files
+SET ocr_markdown = $1,
+    page_count   = $2
+WHERE id = $3
+`
+
+type SetUploadFileOCRParams struct {
+	OcrMarkdown *string   `json:"ocr_markdown"`
+	PageCount   *int32    `json:"page_count"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) SetUploadFileOCR(ctx context.Context, arg SetUploadFileOCRParams) error {
+	_, err := q.db.Exec(ctx, setUploadFileOCR, arg.OcrMarkdown, arg.PageCount, arg.ID)
+	return err
+}
