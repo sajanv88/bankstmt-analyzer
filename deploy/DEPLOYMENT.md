@@ -33,6 +33,13 @@ was published most recently.
 Two Deployments, because the API and the worker scale on entirely different
 signals — request rate for one, queue depth and Azure latency for the other.
 
+Object names come from the chart's `fullname` helper, not the release name:
+it is the release name alone when that already contains `bankstmt-analyzer`,
+and `<release>-bankstmt-analyzer` otherwise. So `helm install bankstmt`
+produces `bankstmt-bankstmt-analyzer-api`. Every example below assumes
+`fullnameOverride: bankstmt` in the values file, which collapses that back
+to what you would expect.
+
 | Object | Name | Notes |
 | --- | --- | --- |
 | Deployment | `<release>-api` | Runs `--api`. Liveness `/healthz`, readiness `/readyz`, startup probe allowing up to 60 s. |
@@ -113,6 +120,10 @@ Keep one per environment, in your own repository rather than this one:
 
 ```yaml
 # values-prod.yaml
+# Without this, `helm install bankstmt` names everything
+# bankstmt-bankstmt-analyzer-*.
+fullnameOverride: bankstmt
+
 config:
   existingSecret: bankstmt-analyzer-credentials
 
@@ -195,9 +206,10 @@ the one that tells you the release is actually wired up.
 ## Exposing the API
 
 The chart renders one Ingress from `ingress.className`, `ingress.hosts` and
-`ingress.tls`, pointing at the API Service on port 80. It always renders
-`spec.rules` — there is no `defaultBackend` option — which matters for
-Tailscale below.
+`ingress.tls`, pointing at the API Service on port 80. It routes on host and
+path via `spec.rules` by default; `ingress.defaultBackend: true` switches it
+to a single catch-all backend instead, which is what the Tailscale operator
+needs.
 
 Only the API Service has endpoints. The worker runs no HTTP server, and the
 Service selector excludes it deliberately.
@@ -239,22 +251,26 @@ Anything `nginx.ingress.kubernetes.io/*` is ignored under
 `ingressClassName: tailscale` — including the body-size annotation, which
 is the one people carry over from an nginx setup and then wonder about.
 
-**Tailscale's own examples use `defaultBackend`**, which this chart does not
-render. Set `hosts[0].host` to the same short name you put in `tls`, so the
-rule host and the Tailscale Service name agree:
+**It requires `defaultBackend`; `spec.rules` does not work.** The operator
+ignores any rule carrying a host and then finds nothing left to route to:
+
+```
+Warning  InvalidIngressBackend  rule with host "bankstmt" ignored, unsupported
+Warning  NoValidBackends        no valid backends
+```
+
+The Ingress stays up with an empty `Address` and serves nothing. Set
+`ingress.defaultBackend: true`, which switches the template to the shape
+Tailscale documents and leaves `ingress.hosts` unused:
 
 ```yaml
 ingress:
   enabled: true
   className: tailscale
-  hosts:
-    - host: bankstmt
-      paths:
-        - path: /
-          pathType: Prefix
+  defaultBackend: true
   tls:
     - hosts:
-        - bankstmt
+        - bankstmt        # short name; becomes bankstmt.<tailnet>.ts.net
 ```
 
 Then read the MagicDNS name back off the object — the `ADDRESS` column is

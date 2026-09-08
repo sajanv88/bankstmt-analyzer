@@ -96,6 +96,27 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
+
+  # Send everything to the API through spec.defaultBackend instead of
+  # spec.rules, which makes `hosts` below unused.
+  #
+  # Set this for the Tailscale operator (className: tailscale). It ignores
+  # any rule carrying a host — "rule with host \"x\" ignored, unsupported",
+  # followed by "no valid backends" — so the rules form leaves the Ingress
+  # with no Address and nothing serving. Tailscale takes the hostname from
+  # tls[0].hosts[0] instead, as a short name it appends the tailnet to, and
+  # issues the certificate itself, so no secretName is given:
+  #
+  #   className: tailscale
+  #   defaultBackend: true
+  #   tls:
+  #     - hosts:
+  #         - bankstmt
+  #
+  # Leave false for ingress-nginx and the other controllers, which route on
+  # the host and path from the rules below.
+  defaultBackend: false
+
   hosts:
     - host: bankstmt-analyzer.local
       paths:

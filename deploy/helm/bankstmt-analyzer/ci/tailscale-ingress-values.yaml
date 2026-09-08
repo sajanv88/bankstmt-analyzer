@@ -1,0 +1,17 @@
+# The Ingress shape the Tailscale Kubernetes operator requires, which is
+# the defaultBackend branch of templates/ingress.yaml.
+#
+# The operator ignores any rule carrying a host and then reports "no valid
+# backends", so spec.rules is unusable here. It takes the hostname from
+# tls[0].hosts[0] as a short name and appends the tailnet, and issues the
+# certificate itself — hence no secretName.
+config:
+  existingSecret: bankstmt-analyzer-credentials
+
+ingress:
+  enabled: true
+  className: tailscale
+  defaultBackend: true
+  tls:
+    - hosts:
+        - bankstmt

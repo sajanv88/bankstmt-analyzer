@@ -19,6 +19,16 @@ spec:
   tls:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- if .Values.ingress.defaultBackend }}
+  # Everything to the API, with no host or path matching. Required by the
+  # Tailscale operator, which ignores any rule carrying a host and then
+  # reports "no valid backends" — see values.yaml.
+  defaultBackend:
+    service:
+      name: {{ $fullName }}
+      port:
+        number: {{ $svcPort }}
+  {{- else }}
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host | quote }}
@@ -34,4 +44,5 @@ spec:
                   number: {{ $svcPort }}
           {{- end }}
     {{- end }}
+  {{- end }}
 {{- end }}

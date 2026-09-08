@@ -28,9 +28,8 @@ storage:
   s3:
     # An in-cluster MinIO. Adjust the service name and namespace to match
     # wherever it actually runs.
-    endpoint: https://minio-minio-api-ingress.tail4fc230.ts.net
+    endpoint: http://100.95.97.56:9000
     bucket: bankstmt-uploads
-    region: us-east-1
     usePathStyle: true
     prefix: dev
 
@@ -83,22 +82,19 @@ ingress:
   #       - path: /
   #         pathType: Prefix
   #
-  # Under the Tailscale operator the shape differs: the tailnet name comes
-  # from tls[0].hosts[0] and is a short name, not an FQDN, and there is no
-  # secretName because the operator issues the certificate itself. Set the
-  # rule host to the same short name, since this chart always renders
-  # spec.rules and never a defaultBackend.
-  #
+  # Under the Tailscale operator the shape differs. The operator ignores any
+  # rule carrying a host, so this must use defaultBackend or the Ingress
+  # ends up with no Address and "no valid backends" in its events. The
+  # tailnet name comes from tls[0].hosts[0], as a short name the operator
+  # appends the tailnet to — bankstmt becomes bankstmt.<tailnet>.ts.net —
+  # and there is no secretName, because the operator issues the certificate
+  # itself. HTTPS must be enabled for the tailnet first.
   enabled: true
   className: tailscale
-  hosts:
-    - host: bankstmt
-      paths:
-        - path: /
-          pathType: Prefix
+  defaultBackend: true
   tls:
     - hosts:
-        - bankstmt.tail4fc230.ts.net
+        - bankstmt
 
 # Simpler still on a tailnet: leave the Ingress off and let the operator
 # expose the Service directly. No certificate and no HTTP proxy in the path.

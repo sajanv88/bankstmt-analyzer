@@ -28,7 +28,14 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "bankstmt-analyzer.serviceAccountName" . }}
+      # Deliberately NOT serviceAccountName. This is a pre-install hook, so
+      # it runs before the chart's own ServiceAccount is applied, and the
+      # job-controller refuses to create a pod naming a ServiceAccount that
+      # does not exist yet — the Job sits at 0/1 until the install times
+      # out. Nothing is lost by using "default": the migration talks only to
+      # Postgres (main.go returns before the blob store is built when no
+      # role is selected), and the chart's ServiceAccount sets
+      # automountServiceAccountToken: false anyway, so it grants nothing.
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
