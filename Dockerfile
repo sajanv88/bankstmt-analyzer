@@ -1,7 +1,7 @@
 # Cross-compiling build stage: it runs on the builder's native platform and
 # targets whatever buildx asks for, so building the arm64 image on an amd64
 # runner needs no emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 # Set by buildx for each target platform.
 ARG TARGETOS
