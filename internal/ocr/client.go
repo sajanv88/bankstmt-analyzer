@@ -119,6 +119,10 @@ type APIError struct {
 	Body string
 	// RetryAfter is the Retry-After header when the service sent one.
 	RetryAfter time.Duration
+	// URL is the request that failed, reported so a routing or model-name
+	// mistake is readable from the error alone. The key travels in a
+	// header, so nothing secret appears here.
+	URL string
 }
 
 func newAPIError(resp *http.Response) *APIError {
@@ -128,6 +132,9 @@ func newAPIError(resp *http.Response) *APIError {
 		Status:     resp.Status,
 		Body:       strings.TrimSpace(string(body)),
 	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		err.URL = resp.Request.URL.String()
+	}
 	if after, parseErr := time.ParseDuration(resp.Header.Get("Retry-After") + "s"); parseErr == nil {
 		err.RetryAfter = after
 	}
@@ -135,10 +142,14 @@ func newAPIError(resp *http.Response) *APIError {
 }
 
 func (e *APIError) Error() string {
-	if e.Body == "" {
-		return fmt.Sprintf("ocr: request failed with %s", e.Status)
+	msg := fmt.Sprintf("ocr: request failed with %s", e.Status)
+	if e.URL != "" {
+		msg += fmt.Sprintf(" for %s", e.URL)
 	}
-	return fmt.Sprintf("ocr: request failed with %s: %s", e.Status, e.Body)
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
 }
 
 // Retryable reports whether another attempt could plausibly succeed: rate

@@ -25,8 +25,25 @@ build: ## Build the binary into bin/
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/api
 
 .PHONY: run
-run: ## Run the API and worker locally, migrating first
+run: ## Run the API and worker in one process, migrating first
 	go run ./cmd/api --migrate
+
+# run-api and run-worker exist so each role can be run on its own with the
+# environment still coming from .env. Running `go run ./cmd/api --worker`
+# by hand does not work: only make loads .env, so the process would start
+# with none of the required variables set.
+#
+# Both migrate. Migrations are idempotent and take a Postgres advisory
+# lock, so whichever role is started first brings the schema up and the
+# other finds nothing to do.
+
+.PHONY: run-api
+run-api: ## Run only the HTTP API locally
+	go run ./cmd/api --api --migrate
+
+.PHONY: run-worker
+run-worker: ## Run only the background worker locally
+	go run ./cmd/api --worker --migrate
 
 .PHONY: clean
 clean: ## Remove build output

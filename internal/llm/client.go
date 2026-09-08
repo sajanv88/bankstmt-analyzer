@@ -43,6 +43,9 @@ func NewClient(cfg config.AzureOpenAI, systemPrompt string) (*Client, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("llm: endpoint must not be empty")
 	}
+	if err := checkEndpointIsBase(endpoint); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil, fmt.Errorf("llm: the system prompt must not be empty")
 	}
@@ -156,6 +159,12 @@ type APIError struct {
 	Status     string
 	Body       string
 	RetryAfter time.Duration
+	// URL is the request that failed. It is reported because Azure
+	// answers a wrong deployment name, a wrong api-version and a wrong
+	// endpoint with the same opaque "Resource not found", and the URL is
+	// what tells those apart. No credential appears in it: the key
+	// travels in a header.
+	URL string
 }
 
 func newAPIError(resp *http.Response) *APIError {
@@ -165,6 +174,9 @@ func newAPIError(resp *http.Response) *APIError {
 		Status:     resp.Status,
 		Body:       strings.TrimSpace(string(body)),
 	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		err.URL = resp.Request.URL.String()
+	}
 	if after, parseErr := time.ParseDuration(resp.Header.Get("Retry-After") + "s"); parseErr == nil {
 		err.RetryAfter = after
 	}
@@ -172,10 +184,14 @@ func newAPIError(resp *http.Response) *APIError {
 }
 
 func (e *APIError) Error() string {
-	if e.Body == "" {
-		return fmt.Sprintf("llm: request failed with %s", e.Status)
+	msg := fmt.Sprintf("llm: request failed with %s", e.Status)
+	if e.URL != "" {
+		msg += fmt.Sprintf(" for %s", e.URL)
 	}
-	return fmt.Sprintf("llm: request failed with %s: %s", e.Status, e.Body)
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
 }
 
 // Retryable reports whether another attempt could plausibly succeed.
@@ -191,3 +207,33 @@ func (e *TransportError) Unwrap() error { return e.Cause }
 
 // Retryable is always true: the request never reached the deployment.
 func (e *TransportError) Retryable() bool { return true }
+
+// apiPathMarkers are path segments that belong to the API route this client
+// builds for itself.
+var apiPathMarkers = []string{"/openai", "/models", "/chat/completions", "/responses"}
+
+// checkEndpointIsBase rejects an endpoint that already carries the API
+// path.
+//
+// AZURE_OPENAI_ENDPOINT is the resource base; this client appends
+// /openai/deployments/<deployment>/chat/completions itself. Pasting a full
+// URL from the Azure portal instead produces a doubled path that Azure
+// answers with a bare "Resource not found", which is a genuinely hard 404
+// to read. Catching it at startup turns that into a message that names the
+// problem.
+func checkEndpointIsBase(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("llm: endpoint %q is not a valid URL: %w", endpoint, err)
+	}
+	path := strings.ToLower(parsed.Path)
+	for _, marker := range apiPathMarkers {
+		if strings.Contains(path, marker) {
+			return fmt.Errorf(
+				"llm: endpoint %q must be the resource base URL (for example https://<resource>.services.ai.azure.com), "+
+					"not the full request URL; the deployment path is appended automatically",
+				endpoint)
+		}
+	}
+	return nil
+}

@@ -69,6 +69,20 @@ make compose-up           # postgres:16 and MinIO, with the bucket created
 make run                  # migrates, then serves on HTTP_ADDR
 ```
 
+`make run` runs the API and the worker in one process. To run them
+separately, in two terminals:
+
+```sh
+make run-api              # HTTP API only
+make run-worker           # background worker only
+```
+
+Use the make targets rather than calling `go run ./cmd/api` directly:
+only make loads `.env`, so a bare `go run` starts with none of the
+required variables set and exits complaining that `DATABASE_URL` is
+missing. If you would rather not use make, export the variables into your
+shell first.
+
 The MinIO console is at <http://localhost:9001> (`bankstmt` /
 `bankstmt123`) if you want to see what was uploaded.
 
@@ -271,7 +285,8 @@ serialise rather than collide.
 | Target | Purpose |
 | --- | --- |
 | `make build` | Build into `bin/`. |
-| `make run` | Migrate and run locally. |
+| `make run` | Migrate and run the API and worker in one process. |
+| `make run-api` / `make run-worker` | Migrate and run a single role. |
 | `make test` / `make test-race` | Run the tests. |
 | `make lint` | Run `golangci-lint`. |
 | `make sqlc` | Regenerate the query layer from `internal/db/queries`. |

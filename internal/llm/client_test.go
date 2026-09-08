@@ -396,3 +396,98 @@ func TestCurrencyFallsBackToAnalysis(t *testing.T) {
 	assert.Equal(t, "GBP", resp.Currency())
 	assert.Equal(t, "2025-02-01", resp.PeriodStart())
 }
+
+// TestNewClientRejectsAFullRequestURL covers the mistake that is easy to
+// make and hard to read: pasting the whole endpoint from the Azure portal
+// into AZURE_OPENAI_ENDPOINT. The client appends the deployment path
+// itself, so the result is a doubled path that Azure answers with a bare
+// "Resource not found" — a 404 that says nothing about the real cause.
+func TestNewClientRejectsAFullRequestURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		endpoint string
+		wantErr  bool
+	}{
+		{
+			name:     "the resource base is what this wants",
+			endpoint: "https://example.services.ai.azure.com",
+			wantErr:  false,
+		},
+		{
+			name:     "a trailing slash is fine",
+			endpoint: "https://example.services.ai.azure.com/",
+			wantErr:  false,
+		},
+		{
+			name:     "a v1 responses URL",
+			endpoint: "https://example.services.ai.azure.com/openai/v1/responses",
+			wantErr:  true,
+		},
+		{
+			name:     "a v1 base URL",
+			endpoint: "https://example.openai.azure.com/openai/v1/",
+			wantErr:  true,
+		},
+		{
+			name:     "a full chat completions URL",
+			endpoint: "https://example.openai.azure.com/openai/deployments/gpt-4o/chat/completions",
+			wantErr:  true,
+		},
+		{
+			name:     "the Foundry models route",
+			endpoint: "https://example.services.ai.azure.com/models/chat/completions",
+			wantErr:  true,
+		},
+		{
+			name:     "a gateway path prefix is still allowed",
+			endpoint: "https://gateway.example.com/azure-ai",
+			wantErr:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewClient(config.AzureOpenAI{
+				Endpoint:   tc.endpoint,
+				Deployment: "gpt-4o",
+				APIVersion: "2024-10-21",
+			}, "prompt")
+
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be the resource base URL")
+		})
+	}
+}
+
+// TestAPIErrorNamesTheRequestedURL keeps a 404 diagnosable: Azure returns
+// the same opaque body for a wrong deployment, a wrong api-version and a
+// wrong endpoint.
+func TestAPIErrorNamesTheRequestedURL(t *testing.T) {
+	t.Parallel()
+
+	client, server := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"code":"404","message":"Resource not found"}}`)
+	})
+
+	_, err := client.Analyze(t.Context(), []Statement{{Markdown: "x"}})
+	require.Error(t, err)
+
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	// The query string is part of it on purpose: a wrong api-version is
+	// one of the things that produces this same 404.
+	assert.Equal(t,
+		server.URL+"/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21",
+		apiErr.URL)
+	assert.Contains(t, err.Error(), "Resource not found")
+	// The key travels in a header, so it must not appear in the URL.
+	assert.NotContains(t, err.Error(), "test-key")
+}
