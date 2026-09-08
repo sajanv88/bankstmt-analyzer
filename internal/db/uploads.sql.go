@@ -54,3 +54,32 @@ func (q *Queries) GetUpload(ctx context.Context, id uuid.UUID) (Upload, error) {
 	)
 	return i, err
 }
+
+const setUploadStatus = `-- name: SetUploadStatus :one
+UPDATE uploads
+SET status         = $1,
+    failure_reason = $2,
+    updated_at     = now()
+WHERE id = $3
+RETURNING id, status, failure_reason, file_count, created_at, updated_at
+`
+
+type SetUploadStatusParams struct {
+	Status        string    `json:"status"`
+	FailureReason *string   `json:"failure_reason"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) SetUploadStatus(ctx context.Context, arg SetUploadStatusParams) (Upload, error) {
+	row := q.db.QueryRow(ctx, setUploadStatus, arg.Status, arg.FailureReason, arg.ID)
+	var i Upload
+	err := row.Scan(
+		&i.ID,
+		&i.Status,
+		&i.FailureReason,
+		&i.FileCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

@@ -11,8 +11,32 @@ import (
 )
 
 type Querier interface {
+	// One point per day: the closing balance, taken as the balance after the
+	// last transaction recorded for that day. Rows arrive in statement order,
+	// so the highest id on a given date is the latest one.
+	BalanceOverTime(ctx context.Context, arg BalanceOverTimeParams) ([]BalanceOverTimeRow, error)
+	// Spending only: an income category is not a slice of a spending pie.
+	CategoryBreakdown(ctx context.Context, arg CategoryBreakdownParams) ([]CategoryBreakdownRow, error)
 	CreateUpload(ctx context.Context, arg CreateUploadParams) (Upload, error)
+	CreateUploadFile(ctx context.Context, arg CreateUploadFileParams) (UploadFile, error)
+	EssentialVsDiscretionary(ctx context.Context, arg EssentialVsDiscretionaryParams) ([]EssentialVsDiscretionaryRow, error)
+	GetAnalysisByUpload(ctx context.Context, uploadID uuid.UUID) (Analysis, error)
+	GetAnalysisIDByUpload(ctx context.Context, uploadID uuid.UUID) (uuid.UUID, error)
+	// Chart aggregations for GET /api/v1/uploads/{id}/visualization.
+	// See conventions.go for the amount/direction conventions these depend on
+	// and for why money leaves the database as float8.
+	// Bounds the default window. Both columns are NULL when the analysis has
+	// no transactions at all, which the handler treats as an empty result
+	// rather than an error.
+	GetTransactionMonthBounds(ctx context.Context, analysisID uuid.UUID) (GetTransactionMonthBoundsRow, error)
 	GetUpload(ctx context.Context, id uuid.UUID) (Upload, error)
+	// Ordered by position so the statements are always presented to the model
+	// in the order the client submitted them.
+	ListUploadFiles(ctx context.Context, uploadID uuid.UUID) ([]UploadFile, error)
+	MonthlyByCategory(ctx context.Context, arg MonthlyByCategoryParams) ([]MonthlyByCategoryRow, error)
+	MonthlyIncomeVsSpending(ctx context.Context, arg MonthlyIncomeVsSpendingParams) ([]MonthlyIncomeVsSpendingRow, error)
+	SetUploadStatus(ctx context.Context, arg SetUploadStatusParams) (Upload, error)
+	WindowSummary(ctx context.Context, arg WindowSummaryParams) (WindowSummaryRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -1,5 +1,18 @@
 // Command bankstmt-analyzer runs the bank statement analysis service: the
 // HTTP API, the background worker, or both in one process.
+//
+//	@title						bankstmt-analyzer API
+//	@version					1.0
+//	@description				Ingests bank statement PDFs, runs them through an Azure-hosted Mistral OCR endpoint and an Azure OpenAI deployment, and serves the resulting analysis and chart data.
+//	@description
+//	@description				Errors are returned as RFC 7807 problem documents with the media type application/problem+json.
+//	@BasePath					/
+//	@accept						json
+//	@produce					json
+//	@tag.name					uploads
+//	@tag.description			Submitting statements and reading their analysis
+//	@tag.name					health
+//	@tag.description			Liveness and readiness probes
 package main
 
 import (
@@ -7,13 +20,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sajanv88/bankstmt-analyzer/internal/config"
@@ -127,9 +140,18 @@ func run(args []string, stdout *os.File) error {
 	}
 	logger.InfoContext(ctx, "blob storage ready", "root", blobs.Root())
 
+	store := db.NewStore(pool)
+
 	g, gctx := errgroup.WithContext(ctx)
 	if opts.runAPI {
-		if err := startAPI(gctx, g, cfg, logger, pool); err != nil {
+		if err := startAPI(gctx, g, apihttp.Deps{
+			Config:   cfg,
+			Logger:   logger,
+			DB:       store,
+			Store:    store,
+			Blobs:    blobs,
+			Enqueuer: unavailableEnqueuer{},
+		}); err != nil {
 			return err
 		}
 	}
@@ -143,15 +165,12 @@ func run(args []string, stdout *os.File) error {
 
 // startAPI builds the HTTP server and registers its serve and shutdown
 // goroutines with g.
-func startAPI(ctx context.Context, g *errgroup.Group, cfg config.Config, logger *slog.Logger, pool apihttp.Pinger) error {
-	handler, err := apihttp.NewRouter(apihttp.Deps{
-		Config: cfg,
-		Logger: logger,
-		DB:     pool,
-	})
+func startAPI(ctx context.Context, g *errgroup.Group, deps apihttp.Deps) error {
+	handler, err := apihttp.NewRouter(deps)
 	if err != nil {
 		return err
 	}
+	cfg, logger := deps.Config, deps.Logger
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -184,4 +203,14 @@ func startAPI(ctx context.Context, g *errgroup.Group, cfg config.Config, logger 
 		return nil
 	})
 	return nil
+}
+
+// unavailableEnqueuer stands in for the analysis pipeline, which is not
+// part of this build. The upload handler treats an enqueue failure as a
+// stored-but-unqueued upload: it records the upload as failed and answers
+// 503, rather than accepting work nothing will ever pick up.
+type unavailableEnqueuer struct{}
+
+func (unavailableEnqueuer) Enqueue(context.Context, uuid.UUID) error {
+	return errors.New("the analysis pipeline is not available in this build")
 }

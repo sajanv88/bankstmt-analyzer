@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sajanv88/bankstmt-analyzer/internal/config"
+	apihttp "github.com/sajanv88/bankstmt-analyzer/internal/http"
+	"github.com/sajanv88/bankstmt-analyzer/internal/storage"
 )
 
 func TestParseFlags(t *testing.T) {
@@ -111,7 +113,14 @@ func TestStartAPIShutsDownOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	g, gctx := errgroup.WithContext(ctx)
-	require.NoError(t, startAPI(gctx, g, cfg, logger, okPinger{}))
+	require.NoError(t, startAPI(gctx, g, apihttp.Deps{
+		Config:   cfg,
+		Logger:   logger,
+		DB:       okPinger{},
+		Store:    stubStore{},
+		Blobs:    stubBlobs{},
+		Enqueuer: unavailableEnqueuer{},
+	}))
 
 	requireServing(t, "http://"+addr+"/healthz")
 
@@ -138,6 +147,13 @@ func TestStartAPIShutsDownOnContextCancel(t *testing.T) {
 type okPinger struct{}
 
 func (okPinger) Ping(context.Context) error { return nil }
+
+// stubStore and stubBlobs satisfy the router's dependency check for a test
+// that only exercises the server lifecycle. The handlers themselves are
+// covered against purpose-built fakes in internal/http.
+type stubStore struct{ apihttp.UploadStore }
+
+type stubBlobs struct{ storage.BlobStore }
 
 // freeAddr reserves an ephemeral port, then releases it so the server under
 // test can bind it.

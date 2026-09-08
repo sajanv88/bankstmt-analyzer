@@ -1,0 +1,564 @@
+{
+    "consumes": [
+        "application/json"
+    ],
+    "produces": [
+        "application/json"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "Ingests bank statement PDFs, runs them through an Azure-hosted Mistral OCR endpoint and an Azure OpenAI deployment, and serves the resulting analysis and chart data.\n\nErrors are returned as RFC 7807 problem documents with the media type application/problem+json.",
+        "title": "bankstmt-analyzer API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/api/v1/uploads": {
+            "post": {
+                "description": "Accepts between 1 and 12 PDF bank statements as multipart/form-data under the field `files`, each at most 20 MB. Files are validated by magic bytes rather than by the client-supplied content type. The response returns immediately; poll the status endpoint for progress.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Upload bank statements",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Bank statement PDFs (repeat the field once per file)",
+                        "name": "files",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.CreateUploadResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Malformed request, no files, too many files, or a file that is not a PDF",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "413": {
+                        "description": "A file, or the request as a whole, is too large",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "503": {
+                        "description": "The upload was stored but could not be queued for analysis",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/uploads/{id}/status": {
+            "get": {
+                "description": "Reports the processing state of an upload. `failure_reason` is present only when the status is `failed`, and `analysis_id` only when it is `completed`.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Get upload status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Upload id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.UploadStatusResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "The id is not a uuid",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "404": {
+                        "description": "No such upload",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/uploads/{id}/visualization": {
+            "get": {
+                "description": "Returns chart data for a completed upload. The `present` series are recomputed from the recorded transactions for the requested window, so they always match the window asked for; `forecast` is the model's projection, served as stored. The default window is the last 3 months that carry data. `months` (1-12) counts back from the last month with data; `from` and `to` (YYYY-MM) override it, and supplying just one of them anchors that end.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "uploads"
+                ],
+                "summary": "Get visualization data",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Upload id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "Number of months to include, 1-12",
+                        "name": "months",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "First month, YYYY-MM",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Last month, YYYY-MM",
+                        "name": "to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.VisualizationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid id or window parameters",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "404": {
+                        "description": "No such upload",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "409": {
+                        "description": "The upload is not completed",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    }
+                }
+            }
+        },
+        "/healthz": {
+            "get": {
+                "description": "Reports that the process is running. It performs no dependency checks, so it never fails because of a database outage.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/readyz": {
+            "get": {
+                "description": "Reports whether the service can serve traffic, verified by pinging the database.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Readiness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.HealthResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "internal_http.BalancePoint": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "type": "number",
+                    "example": 4210.88
+                },
+                "date": {
+                    "type": "string",
+                    "example": "2025-01-31"
+                }
+            }
+        },
+        "internal_http.CategorySlice": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number",
+                    "example": 612.3
+                },
+                "category": {
+                    "type": "string",
+                    "example": "Groceries"
+                },
+                "share": {
+                    "description": "Share is the fraction of total window spending, 0..1.",
+                    "type": "number",
+                    "example": 0.18
+                },
+                "transaction_count": {
+                    "type": "integer",
+                    "example": 27
+                }
+            }
+        },
+        "internal_http.CreateUploadResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "example": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                },
+                "status": {
+                    "type": "string",
+                    "example": "pending"
+                }
+            }
+        },
+        "internal_http.EssentialSplitPoint": {
+            "type": "object",
+            "properties": {
+                "discretionary": {
+                    "type": "number",
+                    "example": 830.55
+                },
+                "essential": {
+                    "type": "number",
+                    "example": 1580
+                },
+                "month": {
+                    "type": "string",
+                    "example": "2025-01"
+                }
+            }
+        },
+        "internal_http.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "ok"
+                }
+            }
+        },
+        "internal_http.InvalidParam": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_http.MonthCategoryPoint": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number",
+                    "example": 204.1
+                },
+                "category": {
+                    "type": "string",
+                    "example": "Groceries"
+                },
+                "month": {
+                    "type": "string",
+                    "example": "2025-01"
+                }
+            }
+        },
+        "internal_http.MonthlyIncomeSpendingPoint": {
+            "type": "object",
+            "properties": {
+                "income": {
+                    "type": "number",
+                    "example": 3200
+                },
+                "month": {
+                    "type": "string",
+                    "example": "2025-01"
+                },
+                "net": {
+                    "description": "Net is income minus spending: positive means the month added to\nsavings.",
+                    "type": "number",
+                    "example": 789.45
+                },
+                "spending": {
+                    "type": "number",
+                    "example": 2410.55
+                }
+            }
+        },
+        "internal_http.Period": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "string",
+                    "example": "2025-01"
+                },
+                "to": {
+                    "type": "string",
+                    "example": "2025-03"
+                }
+            }
+        },
+        "internal_http.PresentCharts": {
+            "type": "object",
+            "properties": {
+                "balance_over_time": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.BalancePoint"
+                    }
+                },
+                "category_breakdown": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.CategorySlice"
+                    }
+                },
+                "essential_vs_discretionary": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.EssentialSplitPoint"
+                    }
+                },
+                "monthly_by_category": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.MonthCategoryPoint"
+                    }
+                },
+                "monthly_income_vs_spending": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.MonthlyIncomeSpendingPoint"
+                    }
+                }
+            }
+        },
+        "internal_http.Problem": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "description": "Detail explains this specific occurrence. It never contains\ncredentials or internal stack traces.",
+                    "type": "string"
+                },
+                "instance": {
+                    "description": "Instance identifies this occurrence — here, the request path.",
+                    "type": "string"
+                },
+                "invalid_params": {
+                    "description": "InvalidParams is an extension member listing per-field validation\nfailures.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_http.InvalidParam"
+                    }
+                },
+                "request_id": {
+                    "description": "RequestID is an extension member that ties a response to its log\nlines.",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status repeats the HTTP status code, so the body stands alone.",
+                    "type": "integer"
+                },
+                "title": {
+                    "description": "Title is a short, human-readable summary, stable for a given Type.",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "Type is a URI reference identifying the problem kind. \"about:blank\"\nmeans the status code alone describes it, which RFC 7807 defines as\nthe default.",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_http.UploadStatusResponse": {
+            "type": "object",
+            "properties": {
+                "analysis_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "failure_reason": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "processing",
+                        "completed",
+                        "failed"
+                    ]
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_http.VisualizationResponse": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string",
+                    "example": "EUR"
+                },
+                "forecast": {
+                    "description": "Forecast is served verbatim from the analysis's chart_forecast\ncolumn: it is the model's projection, not something that can be\nrecomputed from recorded transactions. It is null when the model\nproduced no forecast.",
+                    "type": "object"
+                },
+                "period": {
+                    "$ref": "#/definitions/internal_http.Period"
+                },
+                "present": {
+                    "$ref": "#/definitions/internal_http.PresentCharts"
+                },
+                "summary": {
+                    "$ref": "#/definitions/internal_http.VisualizationSummary"
+                }
+            }
+        },
+        "internal_http.VisualizationSummary": {
+            "type": "object",
+            "properties": {
+                "average_monthly_income": {
+                    "type": "number",
+                    "example": 3200
+                },
+                "average_monthly_spending": {
+                    "type": "number",
+                    "example": 2410.55
+                },
+                "discretionary_spending": {
+                    "type": "number",
+                    "example": 2491.65
+                },
+                "essential_spending": {
+                    "type": "number",
+                    "example": 4740
+                },
+                "month_count": {
+                    "description": "MonthCount is how many distinct months actually carry data in the\nwindow, which can be fewer than the months the window spans.",
+                    "type": "integer",
+                    "example": 3
+                },
+                "net_savings": {
+                    "type": "number",
+                    "example": 2368.35
+                },
+                "recurring_spending": {
+                    "type": "number",
+                    "example": 1830
+                },
+                "savings_rate": {
+                    "description": "SavingsRate is NetSavings over TotalIncome, 0 when there is no\nincome in the window.",
+                    "type": "number",
+                    "example": 0.2467
+                },
+                "total_income": {
+                    "type": "number",
+                    "example": 9600
+                },
+                "total_spending": {
+                    "type": "number",
+                    "example": 7231.65
+                },
+                "transaction_count": {
+                    "type": "integer",
+                    "example": 184
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "description": "Submitting statements and reading their analysis",
+            "name": "uploads"
+        },
+        {
+            "description": "Liveness and readiness probes",
+            "name": "health"
+        }
+    ]
+}

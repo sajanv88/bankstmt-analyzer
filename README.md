@@ -9,10 +9,12 @@ drives the analysis pipeline.
 
 ## Status
 
-Scaffolding is in place: configuration, database schema and migrations,
-blob storage, the HTTP server with health probes, and the process
-lifecycle. The upload/status/visualization endpoints, the OCR and LLM
-clients, and the taskQ pipeline follow.
+The API is complete: uploads, status and visualization all work, with
+Swagger served outside production. The OCR and LLM clients and the taskQ
+pipeline that drives them are not in this build yet, so an accepted upload
+cannot be analysed: `POST /api/v1/uploads` stores the files, records the
+upload as `failed` with the reason `enqueue: ...`, and answers 503 rather
+than accepting work nothing will pick up.
 
 ## Requirements
 
@@ -68,17 +70,108 @@ curl -s localhost:8080/healthz    # {"status":"ok"}
 curl -s localhost:8080/readyz     # {"status":"ok"} once the database answers
 ```
 
-Errors are returned as RFC 7807 problem documents:
-
-```sh
-curl -s localhost:8080/nope
-# {"type":"about:blank","title":"Not Found","status":404,
-#  "detail":"The requested resource does not exist.","instance":"/nope",
-#  "request_id":"..."}
-```
-
 Tear the database down again with `make compose-down` (this deletes its
 volume).
+
+## API
+
+Base path `/api/v1`. Every error is an RFC 7807 problem document served as
+`application/problem+json`.
+
+### Upload statements
+
+Between 1 and 12 PDFs, each at most 20 MB, in the repeated `files` field.
+Files are validated by their `%PDF-` magic bytes, not by the content type
+the client claims.
+
+```sh
+curl -s -X POST localhost:8080/api/v1/uploads   -F "files=@january.pdf"   -F "files=@february.pdf"
+
+# 202 Accepted
+# {"id":"c6148f86-1e95-443a-836b-e7e949872e44","status":"pending"}
+```
+
+### Poll the status
+
+```sh
+curl -s localhost:8080/api/v1/uploads/c6148f86-.../status
+
+# {"id":"c6148f86-...","status":"completed",
+#  "created_at":"2025-03-01T10:00:00Z","updated_at":"2025-03-01T10:04:12Z",
+#  "analysis_id":"11111111-..."}
+```
+
+`failure_reason` appears only when the status is `failed`, and
+`analysis_id` only when it is `completed`.
+
+### Fetch the visualization
+
+Valid only once the upload is `completed`; otherwise it answers 409. The
+default window is the last 3 months that carry data. `months` (1-12)
+counts back from the last month with data, and `from`/`to` (`YYYY-MM`)
+override it — supply just one to anchor that end.
+
+```sh
+# default window
+curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization"
+
+# a single month
+curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization?months=1"
+
+# an explicit range
+curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization?from=2025-01&to=2025-02"
+```
+
+```json
+{
+  "currency": "EUR",
+  "period": { "from": "2025-01", "to": "2025-03" },
+  "present": {
+    "monthly_income_vs_spending": [
+      { "month": "2025-01", "income": 3000, "spending": 250, "net": 2750 }
+    ],
+    "category_breakdown": [
+      { "category": "Rent", "amount": 800, "transaction_count": 1, "share": 0.59 }
+    ],
+    "monthly_by_category": [
+      { "month": "2025-01", "category": "Groceries", "amount": 200 }
+    ],
+    "essential_vs_discretionary": [
+      { "month": "2025-01", "essential": 200, "discretionary": 50 }
+    ],
+    "balance_over_time": [{ "date": "2025-01-10", "balance": 2750 }]
+  },
+  "forecast": { "projected_savings": [{ "month": "2025-04", "amount": 812.5 }] },
+  "summary": {
+    "total_income": 6000, "total_spending": 1350, "net_savings": 4650,
+    "savings_rate": 0.775, "essential_spending": 1300,
+    "discretionary_spending": 50, "recurring_spending": 800,
+    "average_monthly_income": 2000, "average_monthly_spending": 450,
+    "transaction_count": 6, "month_count": 3
+  }
+}
+```
+
+`present` is always recomputed from the `transactions` table for the window
+asked for, so it matches the requested range rather than whatever window
+the model happened to chart. `forecast` is a projection and cannot be
+recomputed, so it is served as stored.
+
+### Errors
+
+```sh
+curl -s localhost:8080/api/v1/uploads/nope/status
+# {"type":"about:blank","title":"Bad Request","status":400,
+#  "detail":"The upload id must be a uuid.","instance":"/api/v1/uploads/nope/status",
+#  "request_id":"...","invalid_params":[{"name":"id","reason":"not a valid uuid"}]}
+```
+
+## Swagger
+
+Served at <http://localhost:8080/swagger/index.html> whenever `ENV` is not
+`production`; in production the route is absent and returns 404. Regenerate
+the document with `make swagger` after changing any handler annotation or
+DTO — CI fails if it is stale.
 
 ## Run modes
 
@@ -114,7 +207,7 @@ serialise rather than collide.
 ```
 cmd/api            entrypoint: flags, wiring, lifecycle
 internal/config    environment-driven configuration
-internal/db        pgx pool and the sqlc-generated query layer
+internal/db        pgx pool, transaction helpers, sqlc-generated queries
 internal/http      chi router, middleware, handlers, RFC 7807 responses
 internal/logging   slog JSON logger construction
 internal/migrate   embedded goose migration runner
