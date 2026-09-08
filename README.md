@@ -280,20 +280,42 @@ serialise rather than collide.
 
 ## Make targets
 
-`make help` lists them all. The common ones:
+The Makefile runs on Windows, Linux and macOS. Recipes run under bash; on
+Windows it locates Git Bash itself rather than trusting `bash` on PATH,
+which from PowerShell or cmd is usually WSL's and cannot see the Windows
+Go toolchain. If a target cannot find its tools, run `make doctor` — it
+reports which shell it found, every tool it needs, and how to point it at
+a Git installed somewhere unusual (`make GIT_BASH='D:/…/bash.exe'`, or set
+it once in a gitignored `Makefile.local`).
+
+`make help` lists everything. The ones worth knowing:
 
 | Target | Purpose |
 | --- | --- |
-| `make build` | Build into `bin/`. |
+| `make check` | The fast pre-commit gate: gofmt, vet, lint, and the two generated-code diffs. |
+| `make ci` | Everything CI runs, in CI's order. |
+| `make doctor` | Report the shell, the tools, and what is missing. |
+| `make build` | Build into `bin/` (with `.exe` on Windows). |
 | `make run` | Migrate and run the API and worker in one process. |
 | `make run-api` / `make run-worker` | Migrate and run a single role. |
-| `make test` / `make test-race` | Run the tests. |
-| `make lint` | Run `golangci-lint`. |
-| `make sqlc` | Regenerate the query layer from `internal/db/queries`. |
-| `make swagger` | Regenerate the Swagger definitions into `docs/`. |
+| `make test` / `make test-race` | Unit tests only. Integration tests skip. |
+| `make test-integration` | Everything, against the docker-compose Postgres and MinIO. |
+| `make test-pkg PKG=…` / `make test-run RUN=…` | Narrow the run. |
+| `make lint` / `make fmt` / `make tidy` | Quality. |
+| `make sqlc` / `make swagger` / `make generate` | Regenerate committed generated code. |
+| `make tools` | Install sqlc, swag and golangci-lint at the pinned versions. |
 | `make migrate-up` / `make migrate-down` / `make migrate-status` | Drive goose directly. |
-| `make compose-up` / `make compose-down` | Local Postgres. |
+| `make compose-up` / `make compose-down` / `make compose-ps` / `make compose-logs` | Local Postgres and MinIO. |
 | `make docker` | Build the container image. |
+| `make helm-lint` / `make helm-package` | Chart. |
+
+`make test` deliberately runs with `DATABASE_URL` and the S3 variables
+blanked, which is what makes the integration tests skip. The Makefile
+includes `.env`, so without that a plain `make test` would run migrations
+against whatever database `.env` names — fine when that is the compose
+instance, much less so when it is not. `make test-integration` sets them
+explicitly from `TEST_DATABASE_URL` and `TEST_S3_*`, which default to the
+compose services and can be overridden per run or in `Makefile.local`.
 
 ## Container image
 
@@ -314,6 +336,12 @@ Released images are published multi-arch for `linux/amd64` and
 The chart is at [deploy/helm/bankstmt-analyzer](deploy/helm/bankstmt-analyzer)
 and is published as an OCI artifact to `ghcr.io/sajanv88/charts`.
 
+What follows is enough to get a release installed.
+[deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) is the operator's version:
+what you have to provide, sizing and draining, upgrades and rollback, a
+smoke test, a runbook, and the security and observability gaps worth
+knowing about before this fronts anything real.
+
 It installs two Deployments — the API (`--api`) and the worker
 (`--worker`) — plus a Service, an optional Ingress, optional HPAs and
 PodDisruptionBudgets, a ServiceAccount, and a migration Job that runs as a
@@ -327,16 +355,42 @@ release history:
 kubectl create secret generic bankstmt-analyzer-credentials   --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/bankstmt?sslmode=require'   --from-literal=AZURE_OCR_ENDPOINT='https://<resource>.services.ai.azure.com'   --from-literal=AZURE_OCR_API_KEY='<ocr-key>'   --from-literal=AZURE_OCR_MODEL='mistral-ocr-2503'   --from-literal=AZURE_OPENAI_ENDPOINT='https://<resource>.openai.azure.com'   --from-literal=AZURE_OPENAI_API_KEY='<openai-key>'   --from-literal=AZURE_OPENAI_DEPLOYMENT='<deployment>'
 ```
 
+`secret.yaml` in the chart directory is that same Secret as a manifest you
+can edit and apply, and `secret-dev.yaml` is its development counterpart.
+Both ship with placeholders only — fill them in locally and do not commit
+real values, or generate the Secret from External Secrets, Sealed Secrets
+or a credential store instead. They are excluded from the packaged chart,
+since they are operator input rather than chart content.
+
 Then install:
 
 ```sh
 helm install bankstmt oci://ghcr.io/sajanv88/charts/bankstmt-analyzer   --version 1.0.0   --namespace bankstmt --create-namespace   --set config.existingSecret=bankstmt-analyzer-credentials   --set storage.persistence.enabled=true   --set storage.persistence.storageClass=azurefile-csi   --set ingress.enabled=true   --set ingress.className=nginx   --set ingress.hosts[0].host=bankstmt.example.com
 ```
 
+### Development installs
+
+`values-dev.yaml` is a ready overlay: `ENV=development` so Swagger is
+served, debug logging, one replica of each role, no autoscaling or
+PodDisruptionBudgets, a shorter retry budget, and S3 pointing at an
+in-cluster MinIO.
+
+```sh
+kubectl apply -n bankstmt-dev -f deploy/helm/bankstmt-analyzer/secret-dev.yaml
+helm upgrade --install bankstmt-dev deploy/helm/bankstmt-analyzer   --namespace bankstmt-dev --create-namespace   --values deploy/helm/bankstmt-analyzer/values-dev.yaml
+```
+
+PodDisruptionBudgets are off in that overlay deliberately: a PDB of
+`minAvailable: 1` over a single replica makes the pod unevictable, which
+blocks node drains and cluster upgrades.
+
+### Linting
+
 The `ci/` directory holds the three configurations the chart claims to
 support — chart-managed Secret, existing Secret, and everything switched
-on. CI lints and renders each of them; `make helm-lint` does the same
-locally.
+on. CI lints and renders each of those plus `values-dev.yaml`, and checks
+the packaged chart still contains its templates; `make helm-lint` covers
+the lint and render half locally.
 
 Values worth knowing:
 

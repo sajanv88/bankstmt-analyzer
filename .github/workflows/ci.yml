@@ -148,15 +148,28 @@ jobs:
         # Every values file under ci/ is a configuration the chart claims
         # to support, so each one is linted and rendered.
         run: |
-          for values in deploy/helm/bankstmt-analyzer/ci/*.yaml; do
+          for values in deploy/helm/bankstmt-analyzer/ci/*.yaml \n                        deploy/helm/bankstmt-analyzer/values-dev.yaml; do
             echo "== $values"
             helm lint deploy/helm/bankstmt-analyzer --values "$values"
           done
 
       - name: helm template
         run: |
-          for values in deploy/helm/bankstmt-analyzer/ci/*.yaml; do
+          for values in deploy/helm/bankstmt-analyzer/ci/*.yaml \n                        deploy/helm/bankstmt-analyzer/values-dev.yaml; do
             helm template ci-check deploy/helm/bankstmt-analyzer --values "$values" > /dev/null
+          done
+
+      - name: Packaged chart keeps its templates
+        # .helmignore matches at any depth, so an unanchored entry can
+        # silently drop a template from the package while both lint and
+        # template still pass against the working tree.
+        run: |
+          helm package deploy/helm/bankstmt-analyzer --destination /tmp/chart > /dev/null
+          for want in templates/secret.yaml templates/deployment-api.yaml templates/deployment-worker.yaml; do
+            if ! tar -tzf /tmp/chart/*.tgz | grep -q "bankstmt-analyzer/$want"; then
+              echo "packaged chart is missing $want"
+              exit 1
+            fi
           done
 
   docker:

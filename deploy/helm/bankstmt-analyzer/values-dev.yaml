@@ -1,0 +1,108 @@
+# Development overlay.
+#
+#   helm upgrade --install bankstmt-dev deploy/helm/bankstmt-analyzer \
+#     --namespace bankstmt-dev --create-namespace \
+#     --values deploy/helm/bankstmt-analyzer/values-dev.yaml
+#
+# Only the differences from values.yaml are listed; everything else is
+# inherited. Apply secret-dev.yaml first — this expects the Secret it
+# creates to exist.
+
+# Not "production", so the Swagger UI is served at /swagger/index.html.
+env: development
+logLevel: debug
+
+image:
+  # Development moves faster than release tags, so track a mutable tag and
+  # always re-pull it. Neither is appropriate in production, where the
+  # chart's appVersion pins an immutable release.
+  tag: latest
+  pullPolicy: Always
+
+config:
+  existingSecret: bankstmt-analyzer-credentials-dev
+
+storage:
+  backend: s3
+  s3:
+    # An in-cluster MinIO. Adjust the service name and namespace to match
+    # wherever it actually runs.
+    endpoint: https://minio-minio-api-ingress.tail4fc230.ts.net
+    bucket: bankstmt-uploads
+    region: us-east-1
+    usePathStyle: true
+    prefix: dev
+
+api:
+  # One of each: a dev cluster gains nothing from redundancy, and a single
+  # replica makes it obvious which pod's logs to read.
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    # Off deliberately. A PDB of minAvailable 1 over a single replica makes
+    # the pod unevictable, which blocks node drains and cluster upgrades.
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+worker:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+extraEnv:
+  # Smaller retry budget and faster backoff: in development a failure is
+  # something to see quickly, not to ride out.
+  WORKER_MAX_RETRY: "1"
+  WORKER_BACKOFF_BASE: 1s
+  WORKER_BACKOFF_MAX: 10s
+  # Wide open, so a local frontend on any port can call the API.
+  HTTP_CORS_ALLOWED_ORIGINS: "*"
+
+ingress:
+  # Enable and adjust for a cluster with an ingress controller:
+  # enabled: true
+  # className: nginx
+  # hosts:
+  #   - host: bankstmt.dev.example.com
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
+  #
+  # Under the Tailscale operator the shape differs: the tailnet name comes
+  # from tls[0].hosts[0] and is a short name, not an FQDN, and there is no
+  # secretName because the operator issues the certificate itself. Set the
+  # rule host to the same short name, since this chart always renders
+  # spec.rules and never a defaultBackend.
+  #
+  enabled: true
+  className: tailscale
+  hosts:
+    - host: bankstmt
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - bankstmt.tail4fc230.ts.net
+
+# Simpler still on a tailnet: leave the Ingress off and let the operator
+# expose the Service directly. No certificate and no HTTP proxy in the path.
+#
+# service:
+#   annotations:
+#     tailscale.com/expose: "true"
+#     tailscale.com/hostname: bankstmt-dev

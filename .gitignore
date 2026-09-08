@@ -9,6 +9,12 @@
 
 # Local runtime state
 .env
+# Per-machine make settings: test database, GIT_BASH location, and so on.
+Makefile.local
+# Any per-environment override, but never .env.example, which documents
+# the variables the service reads and is meant to be committed.
+.env.*
+!.env.example
 .data/
 *.pdf
 
@@ -16,3 +22,28 @@
 *.test
 *.out
 coverage.*
+# go.work belongs to whoever is editing the module alongside its
+# dependencies; committing it changes the build for everyone else.
+go.work
+go.work.sum
+# Not vendored today, but an accidental `go mod vendor` is a very large
+# and very silent commit.
+/vendor/
+
+# Helm. The chart-root secret manifests are applied out of band and are
+# filled in with real credentials locally; only the placeholder copies in
+# templates/ and the values files belong in git. The path is spelled out
+# so templates/secret.yaml, which is part of the chart, stays tracked.
+/deploy/helm/*/secret.yaml
+/deploy/helm/*/secret-*.yaml
+# Packaged charts and resolved subchart dependencies.
+*.tgz
+/deploy/helm/*/charts/
+/deploy/helm/*/Chart.lock
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

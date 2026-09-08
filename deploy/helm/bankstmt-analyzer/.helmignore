@@ -4,3 +4,15 @@
 *.tmproj
 .idea/
 .vscode/
+
+# Operator inputs, not chart content. These are applied with kubectl before
+# the release; packaging them into the chart tarball would ship credential
+# placeholders to anyone who pulls it.
+#
+# Anchored to the chart root on purpose. .helmignore matches at any depth
+# like .gitignore, so a bare "secret.yaml" also excludes
+# templates/secret.yaml — which would drop the chart-managed Secret from
+# the package and leave every install without config.existingSecret
+# referencing a Secret that is never created.
+/secret.yaml
+/secret-dev.yaml
