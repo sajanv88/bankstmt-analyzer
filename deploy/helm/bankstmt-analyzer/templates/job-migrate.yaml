@@ -1,0 +1,73 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # The name carries the revision so each upgrade gets its own Job rather
+  # than colliding with the last one still in the namespace.
+  name: {{ include "bankstmt-analyzer.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "bankstmt-analyzer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    # Kept on failure so the logs can be read; the next run deletes it
+    # before creating its own.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "bankstmt-analyzer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "bankstmt-analyzer.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "bankstmt-analyzer.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Selecting neither role makes the binary migrate and exit.
+          args:
+            - --migrate
+            - --api=false
+            - --worker=false
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            {{- include "bankstmt-analyzer.env" . | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "bankstmt-analyzer.secretName" . }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          volumeMounts:
+            {{- if eq .Values.storage.backend "local" }}
+            # STORAGE_DIR is validated at startup even though migrations
+            # never touch it, so it has to exist and be writable.
+            - name: uploads
+              mountPath: {{ .Values.storage.dir }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- if eq .Values.storage.backend "local" }}
+        # Deliberately an emptyDir rather than the shared claim. This runs
+        # as a pre-install hook, so on a first install the chart's own PVC
+        # does not exist yet and mounting it would leave the pod pending
+        # forever. Migrations never read or write uploaded files; the
+        # volume exists only because startup validates STORAGE_DIR.
+        - name: uploads
+          emptyDir: {}
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

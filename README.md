@@ -9,12 +9,12 @@ drives the analysis pipeline.
 
 ## Status
 
-Functionally complete: uploads are OCR'd, analysed and served. What remains
-is packaging — the Dockerfile, the Helm chart and the CI workflows.
+Complete. Uploads are OCR'd, analysed and served; the service ships as a
+container image and a Helm chart, built and released by GitHub Actions.
 
-`prompts/analysis_system.md` still holds a placeholder prompt. Replace it
-with the real one before pointing this at a live deployment; it is embedded
-at build time, so changing it means rebuilding.
+Before pointing this at anything real, review
+`prompts/analysis_system.md`: it is embedded at build time, so changing it
+means rebuilding.
 
 ## Requirements
 
@@ -33,7 +33,8 @@ file. Copy `.env.example` to `.env` and fill it in.
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | pgx connection string. Backs both the application tables and the taskQ queue. |
-| `STORAGE_DIR` | Local directory that holds uploaded PDFs. |
+| `STORAGE_DIR` | Directory holding uploaded PDFs. Required only when `STORAGE_BACKEND=local`. |
+| `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required only when `STORAGE_BACKEND=s3`. See [Storage](#storage). |
 | `AZURE_OCR_ENDPOINT` | Azure Mistral OCR endpoint. |
 | `AZURE_OCR_API_KEY` | Azure Mistral OCR key. |
 | `AZURE_OCR_MODEL` | OCR model name, e.g. `mistral-ocr-2503`. |
@@ -49,6 +50,7 @@ file. Copy `.env.example` to `.env` and fill it in.
 | `HTTP_ADDR` | `:8080` | API listen address. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `MIGRATE_ON_START` | `false` | Apply migrations during startup; same effect as `--migrate`. |
+| `STORAGE_BACKEND` | `local` | `s3` or `local`. See [Storage](#storage). `.env.example` and the chart both select `s3`. |
 | `POSTGRES_PORT` | `5432` | Host port `docker-compose` publishes Postgres on. |
 | `AZURE_OCR_PATH` | `/providers/mistral/azure/ocr` | Route appended to the OCR endpoint. |
 | `WORKER_CONCURRENCY` | `4` | Saga hops processed in parallel. |
@@ -63,9 +65,12 @@ duration, upload limits) alongside their defaults.
 
 ```sh
 cp .env.example .env      # then fill in the Azure values
-make compose-up           # postgres:16 on POSTGRES_PORT
+make compose-up           # postgres:16 and MinIO, with the bucket created
 make run                  # migrates, then serves on HTTP_ADDR
 ```
+
+The MinIO console is at <http://localhost:9001> (`bankstmt` /
+`bankstmt123`) if you want to see what was uploaded.
 
 Check it is alive:
 
@@ -201,6 +206,44 @@ classification is logged, but taskQ has no way to act on it. And
 lease that expires mid-OCR gets the message redelivered to a second
 worker while the first is still working.
 
+## Storage
+
+Uploaded PDFs go through a `BlobStore` interface with two implementations,
+chosen by `STORAGE_BACKEND`.
+
+**`s3` — what `.env.example` and the Helm chart select.** Any
+S3-compatible object store: MinIO,
+AWS S3, Ceph, R2. The API writes an upload's PDFs and the worker reads
+them, and over a bucket that works regardless of where either process
+runs. `make compose-up` starts a MinIO and creates the bucket.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `S3_ENDPOINT` | — | Service URL, e.g. `http://localhost:9000`. Leave empty for AWS S3, where the region resolves it. |
+| `S3_BUCKET` | — | Bucket to write to. It must already exist. |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | — | Credentials. |
+| `S3_REGION` | `us-east-1` | Required by request signing even where the store ignores it. |
+| `S3_USE_PATH_STYLE` | `true` | MinIO needs path-style addressing; set `false` for AWS S3. |
+| `S3_PREFIX` | `""` | Optional key prefix, so one bucket can host several environments. |
+
+The bucket is checked at startup, so a wrong endpoint or a missing bucket
+fails immediately rather than on the first upload.
+
+**`local` — the code default,** so a bare `go run ./cmd/api` needs no
+object store. Writes to `STORAGE_DIR` on disk. Fine when one process runs
+both roles (`make run`, or the image with no flags), but the API and the
+worker must then see the same filesystem — under the Helm chart they are
+separate Deployments, so this needs
+`storage.persistence.enabled=true` with a ReadWriteMany claim. Writes are
+atomic: content lands in a temp file and is renamed, so a crash never
+leaves a truncated PDF.
+
+Both implementations are held to one shared conformance suite
+([`internal/storage/conformance_test.go`](internal/storage/conformance_test.go)),
+so they cannot drift apart on key validation, overwrite semantics, or what
+deleting a missing object does. The object-store half runs whenever
+`S3_ENDPOINT` and `S3_BUCKET` are set, and CI sets them.
+
 ## Swagger
 
 Served at <http://localhost:8080/swagger/index.html> whenever `ENV` is not
@@ -237,6 +280,82 @@ serialise rather than collide.
 | `make compose-up` / `make compose-down` | Local Postgres. |
 | `make docker` | Build the container image. |
 
+## Container image
+
+Multi-stage build: `golang:1.26-alpine` compiles a static binary with
+`CGO_ENABLED=0`, and the result ships on `gcr.io/distroless/static:nonroot`
+— no shell, no package manager, running as uid 65532. About 40 MB.
+
+```sh
+make docker                      # ghcr.io/sajanv88/bankstmt-analyzer:<git describe>
+docker run --rm ghcr.io/sajanv88/bankstmt-analyzer:<tag> --version
+```
+
+Released images are published multi-arch for `linux/amd64` and
+`linux/arm64`.
+
+## Helm
+
+The chart is at [deploy/helm/bankstmt-analyzer](deploy/helm/bankstmt-analyzer)
+and is published as an OCI artifact to `ghcr.io/sajanv88/charts`.
+
+It installs two Deployments — the API (`--api`) and the worker
+(`--worker`) — plus a Service, an optional Ingress, optional HPAs and
+PodDisruptionBudgets, a ServiceAccount, and a migration Job that runs as a
+`pre-install`/`pre-upgrade` hook so the schema is ready before any new pod
+starts.
+
+Put the credentials in a Secret you manage, so they stay out of Helm's
+release history:
+
+```sh
+kubectl create secret generic bankstmt-analyzer-credentials   --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/bankstmt?sslmode=require'   --from-literal=AZURE_OCR_ENDPOINT='https://<resource>.services.ai.azure.com'   --from-literal=AZURE_OCR_API_KEY='<ocr-key>'   --from-literal=AZURE_OCR_MODEL='mistral-ocr-2503'   --from-literal=AZURE_OPENAI_ENDPOINT='https://<resource>.openai.azure.com'   --from-literal=AZURE_OPENAI_API_KEY='<openai-key>'   --from-literal=AZURE_OPENAI_DEPLOYMENT='<deployment>'
+```
+
+Then install:
+
+```sh
+helm install bankstmt oci://ghcr.io/sajanv88/charts/bankstmt-analyzer   --version 1.0.0   --namespace bankstmt --create-namespace   --set config.existingSecret=bankstmt-analyzer-credentials   --set storage.persistence.enabled=true   --set storage.persistence.storageClass=azurefile-csi   --set ingress.enabled=true   --set ingress.className=nginx   --set ingress.hosts[0].host=bankstmt.example.com
+```
+
+The `ci/` directory holds the three configurations the chart claims to
+support — chart-managed Secret, existing Secret, and everything switched
+on. CI lints and renders each of them; `make helm-lint` does the same
+locally.
+
+Values worth knowing:
+
+| Value | Default | Purpose |
+| --- | --- | --- |
+| `config.existingSecret` | `""` | Secret supplying the credential environment variables. Strongly preferred. |
+| `storage.backend` | `s3` | `s3` or `local`. See [Storage](#storage). |
+| `storage.s3.endpoint` / `.bucket` | — | The object store to use. |
+| `storage.persistence.enabled` | `false` | Only for `backend: local`: the shared uploads volume. |
+| `env` | `production` | Anything else also serves the Swagger UI. |
+| `api.replicaCount` / `worker.replicaCount` | `2` / `1` | Fixed replicas when autoscaling is off. |
+| `api.autoscaling.enabled` / `worker.autoscaling.enabled` | `false` | HPA on CPU, and optionally memory. |
+| `api.podDisruptionBudget.enabled` | `true` | PDB for the API; the worker's is off by default. |
+| `worker.terminationGracePeriodSeconds` | `120` | Must exceed the slowest saga step, or a rolling update kills work in flight. |
+| `migration.enabled` | `true` | The pre-upgrade migration Job. |
+
+## CI and releases
+
+`ci.yml` runs on every push and pull request: build, vet, gofmt, a
+`go mod tidy` check, golangci-lint, `sqlc diff` and a `swag init` diff so
+generated code cannot drift, `go test -race` against a postgres:16 service
+container and a MinIO, `helm lint` plus `helm template` over each `ci/`
+values file, and a Docker build that is verified but never pushed.
+
+`release.yml` runs on a `v*` tag and needs no secret beyond
+`GITHUB_TOKEN`. It publishes linux/amd64 and linux/arm64 binaries with
+checksums via GoReleaser, a multi-arch image to
+`ghcr.io/sajanv88/bankstmt-analyzer` tagged with the version and `latest`,
+and the packaged chart to `ghcr.io/sajanv88/charts`.
+
+Chart `version` and `appVersion` both come from the tag with its leading
+`v` removed, which is exactly what `docker/metadata-action` publishes the
+image as — so a chart always resolves to an image that exists.
+
 ## Layout
 
 ```
@@ -249,9 +368,11 @@ internal/llm       Azure OpenAI client and the response contract
 internal/pipeline  the taskQ saga, its steps and their compensations
 internal/logging   slog JSON logger construction
 internal/migrate   embedded goose migration runner
-internal/storage   BlobStore interface and its local-disk implementation
+internal/storage   BlobStore interface, local-disk and S3 implementations
 db/migrations      goose SQL migrations, embedded into the binary
 prompts            the analysis system prompt, embedded at build time
+deploy/helm        the Helm chart
+.github/workflows  CI and release pipelines
 ```
 
 `db/migrations/00003_taskq_broker.sql` carries taskQ's own broker table.

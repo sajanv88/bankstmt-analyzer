@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Response is the model's reply, decoded.
@@ -17,6 +18,7 @@ import (
 // keep in sync with the prompt. The parts this service actually reasons
 // about — the transactions, the currency and the period — are typed.
 type Response struct {
+	Meta         Meta            `json:"meta"`
 	Analysis     Analysis        `json:"analysis"`
 	SavingsPlan  json.RawMessage `json:"savings_plan"`
 	ChartData    ChartData       `json:"chart_data"`
@@ -28,8 +30,25 @@ type Response struct {
 	Raw json.RawMessage `json:"-"`
 }
 
+// Meta is the `meta` object. The prompt puts the currency and the period
+// the statements cover here rather than inside `analysis`.
+type Meta struct {
+	Currency      string        `json:"currency"`
+	PeriodCovered PeriodCovered `json:"period_covered"`
+}
+
+// PeriodCovered is the span the supplied statements cover.
+type PeriodCovered struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
 // Analysis is the `analysis` object. Its sub-objects map one-to-one onto
 // the jsonb columns of the analyses table.
+//
+// Currency, PeriodStart and PeriodEnd are fallbacks for a prompt that
+// reports them here instead of in `meta`. The shipped prompt does not, so
+// they are normally empty; see Response.Currency.
 type Analysis struct {
 	Currency          string          `json:"currency"`
 	PeriodStart       string          `json:"period_start"`
@@ -64,6 +83,34 @@ type Transaction struct {
 	Category     string       `json:"category"`
 	Essential    bool         `json:"essential"`
 	Recurring    bool         `json:"recurring"`
+}
+
+// Currency is the currency the statements are denominated in, taken from
+// `meta` and falling back to `analysis` so a prompt that moves it does not
+// break the pipeline.
+func (r *Response) Currency() string {
+	if c := strings.TrimSpace(r.Meta.Currency); c != "" {
+		return c
+	}
+	return strings.TrimSpace(r.Analysis.Currency)
+}
+
+// PeriodStart is the first day the statements cover, or empty when the
+// model did not report one.
+func (r *Response) PeriodStart() string {
+	if s := strings.TrimSpace(r.Meta.PeriodCovered.Start); s != "" {
+		return s
+	}
+	return strings.TrimSpace(r.Analysis.PeriodStart)
+}
+
+// PeriodEnd is the last day the statements cover, or empty when the model
+// did not report one.
+func (r *Response) PeriodEnd() string {
+	if e := strings.TrimSpace(r.Meta.PeriodCovered.End); e != "" {
+		return e
+	}
+	return strings.TrimSpace(r.Analysis.PeriodEnd)
 }
 
 // requiredKeys are the top-level members the pipeline cannot proceed
@@ -114,8 +161,10 @@ func parseResponse(raw []byte) (*Response, error) {
 	if err := decoder.Decode(&resp); err != nil {
 		return nil, &InvalidResponseError{Reason: "the reply could not be decoded: " + err.Error()}
 	}
-	if resp.Analysis.Currency == "" {
-		return nil, &InvalidResponseError{Reason: "analysis.currency is empty"}
+	if resp.Currency() == "" {
+		return nil, &InvalidResponseError{
+			Reason: "no currency was reported in meta.currency or analysis.currency",
+		}
 	}
 	resp.Raw = raw
 	return &resp, nil

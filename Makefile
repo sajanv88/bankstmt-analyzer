@@ -7,8 +7,9 @@ export
 
 BINARY       ?= bankstmt-analyzer
 VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-DOCKER_IMAGE ?= ghcr.io/nuvraxis/bankstmt-analyzer
+DOCKER_IMAGE ?= ghcr.io/sajanv88/bankstmt-analyzer
 MIGRATIONS   := db/migrations
+CHART        := deploy/helm/bankstmt-analyzer
 LDFLAGS      := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := help
@@ -94,3 +95,13 @@ compose-up: ## Start the local Postgres
 .PHONY: compose-down
 compose-down: ## Stop the local Postgres and delete its volume
 	docker compose down -v
+
+## --- helm -----------------------------------------------------------------
+
+.PHONY: helm-lint
+helm-lint: ## Lint and render the chart against every ci/ values file
+	@for values in $(CHART)/ci/*.yaml; do 		echo "== $$values"; 		helm lint $(CHART) --values "$$values" || exit 1; 		helm template lint-check $(CHART) --values "$$values" > /dev/null || exit 1; 	done
+
+.PHONY: helm-package
+helm-package: ## Package the chart into dist/
+	helm package $(CHART) --version $(patsubst v%,%,$(VERSION)) --app-version $(VERSION) --destination dist

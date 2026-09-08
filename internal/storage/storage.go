@@ -6,7 +6,10 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"path"
+	"strings"
 )
 
 // ErrNotFound is returned by Get and Delete when a key has no object.
@@ -29,4 +32,45 @@ type BlobStore interface {
 	// Delete removes the object at key. Deleting a key that does not
 	// exist returns ErrNotFound.
 	Delete(ctx context.Context, key string) error
+}
+
+// validateKey checks a store key against the rules every implementation
+// enforces, and returns it cleaned into slash-separated form.
+//
+// It lives here rather than in one implementation because the two must
+// agree: a key the local store rejects must not be quietly accepted by the
+// object store, or the same upload would behave differently depending on
+// which backend is configured.
+func validateKey(key string) (string, error) {
+	if strings.TrimSpace(key) == "" {
+		return "", errors.New("storage: key must not be empty")
+	}
+	// Reject leading separators and drive letters before consulting the
+	// filesystem. On Windows filepath.IsAbs("/etc/passwd") is false, so
+	// relying on the OS alone would quietly rewrite a Unix-style absolute
+	// key into a relative one there while rejecting it on Linux. Keys mean
+	// the same thing on every platform, so the check has to too.
+	if strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) || hasDriveLetter(key) {
+		return "", fmt.Errorf("storage: key %q escapes the store root", key)
+	}
+
+	// Keys are slash-separated; normalise a Windows separator first so it
+	// cannot sneak past the traversal check.
+	clean := path.Clean(strings.ReplaceAll(key, `\`, "/"))
+	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("storage: key %q escapes the store root", key)
+	}
+	return clean, nil
+}
+
+// hasDriveLetter reports whether key begins with a Windows drive specifier
+// such as "C:". filepath.VolumeName only recognises one when running on
+// Windows, so testing for it directly keeps a key valid or invalid on every
+// platform alike.
+func hasDriveLetter(key string) bool {
+	if len(key) < 2 || key[1] != ':' {
+		return false
+	}
+	c := key[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }

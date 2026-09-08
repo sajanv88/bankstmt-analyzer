@@ -1,0 +1,19 @@
+{{- range $component := list "api" "worker" }}
+{{- $cfg := index $.Values $component }}
+{{- if $cfg.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bankstmt-analyzer.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "bankstmt-analyzer.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  minAvailable: {{ $cfg.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "bankstmt-analyzer.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+{{- end }}
+{{- end }}

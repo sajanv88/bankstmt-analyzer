@@ -1,0 +1,57 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed as {{ .Release.Name }}.
+
+Check it is up:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status \
+    deployment/{{ include "bankstmt-analyzer.fullname" . }}-api
+
+{{- if .Values.ingress.enabled }}
+
+Reachable at:
+{{- range .Values.ingress.hosts }}
+{{- $scheme := "http" }}
+{{- if $.Values.ingress.tls }}{{ $scheme = "https" }}{{ end }}
+{{- range .paths }}
+  {{ $scheme }}://{{ .host }}{{ .path }}
+{{- end }}
+{{- end }}
+{{- else }}
+
+No Ingress is enabled. To reach it locally:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ include "bankstmt-analyzer.fullname" . }} 8080:{{ .Values.service.port }}
+  curl localhost:8080/healthz
+{{- end }}
+
+{{- if eq .Values.storage.backend "s3" }}
+
+Uploads go to the {{ .Values.storage.s3.bucket | quote }} bucket
+{{- with .Values.storage.s3.endpoint }} at {{ . }}{{ end }}. The bucket must
+already exist and the credentials must be able to write to it; the pods
+check this at startup and refuse to start if not.
+{{- else if not .Values.storage.persistence.enabled }}
+
+WARNING: the local storage backend is selected and persistence is off.
+
+  Uploaded PDFs go to an emptyDir, which is private to each pod. The API
+  stores the files and the worker reads them, so with separate Deployments
+  the worker cannot see what the API wrote and every upload fails at the
+  OCR step.
+
+  Either set storage.backend=s3 and point it at an S3-compatible store,
+  or set storage.persistence.enabled=true with a ReadWriteMany claim.
+{{- end }}
+
+{{- if not .Values.config.existingSecret }}
+
+NOTE: the chart created its own Secret from values, so your credentials
+are stored in this release's Helm history. Prefer config.existingSecret
+for anything beyond a trial.
+{{- end }}
+
+{{- if ne .Values.env "production" }}
+
+NOTE: env is {{ .Values.env | quote }}, so the Swagger UI is served at
+/swagger/index.html. Set env=production to switch it off.
+{{- end }}

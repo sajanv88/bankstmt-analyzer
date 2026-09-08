@@ -1,0 +1,29 @@
+# Keep the build context to what the build actually needs: everything here
+# is either irrelevant to compilation or would invalidate the cache on
+# every change.
+.git
+.github
+.gitignore
+.gitattributes
+.golangci.yml
+.dockerignore
+Dockerfile
+docker-compose.yml
+Makefile
+README.md
+.env
+.env.example
+
+# Local runtime state and build output
+.data/
+bin/
+dist/
+*.pdf
+
+# Deployment manifests are applied by Helm, not baked into the image
+deploy/
+
+# Test artefacts
+*.test
+*.out
+coverage.*

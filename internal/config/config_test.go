@@ -25,7 +25,41 @@ func requiredEnv() map[string]string {
 	}
 }
 
+// managedEnv is every variable config.Load reads. Each test blanks all of
+// them before setting what it needs, so a result never depends on what
+// happened to be exported in the surrounding shell. That is not
+// hypothetical: CI sets S3_ENDPOINT and the S3 credentials for the storage
+// conformance suite, and without this the backend validation tests would
+// find credentials they were asserting were absent.
+var managedEnv = []string{
+	"ENV", "HTTP_ADDR", "LOG_LEVEL", "DATABASE_URL", "MIGRATE_ON_START",
+	"STORAGE_BACKEND", "STORAGE_DIR",
+	"S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_ACCESS_KEY_ID",
+	"S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE", "S3_PREFIX", "S3_TIMEOUT",
+	"AZURE_OCR_ENDPOINT", "AZURE_OCR_API_KEY", "AZURE_OCR_MODEL",
+	"AZURE_OCR_PATH", "AZURE_OCR_TIMEOUT",
+	"AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT",
+	"AZURE_OPENAI_API_VERSION", "AZURE_OPENAI_TIMEOUT",
+	"HTTP_CORS_ALLOWED_ORIGINS",
+	"WORKER_CONCURRENCY", "WORKER_MAX_RETRY",
+	"UPLOAD_MAX_FILES", "UPLOAD_MAX_FILE_BYTES",
+	"TASKQ_QUEUE", "TASKQ_LEASE_DURATION",
+}
+
+// setEnv blanks every managed variable, then applies env. t.Setenv
+// restores the previous values when the test ends.
 func setEnv(t *testing.T, env map[string]string) {
+	t.Helper()
+	for _, name := range managedEnv {
+		t.Setenv(name, "")
+	}
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+}
+
+// addEnv applies more variables without blanking what is already set.
+func addEnv(t *testing.T, env map[string]string) {
 	t.Helper()
 	for k, v := range env {
 		t.Setenv(k, v)
@@ -108,10 +142,83 @@ func TestLoadRejectsOutOfRangeTunables(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			setEnv(t, requiredEnv())
-			setEnv(t, tc.env)
+			addEnv(t, tc.env)
 
 			_, err := config.Load()
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestStorageBackendValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr string
+	}{
+		{
+			name: "local is the default and needs a directory",
+			env:  map[string]string{"STORAGE_DIR": ""},
+			// STORAGE_DIR cannot be marked required in the struct tags
+			// because it only matters for one backend.
+			wantErr: "STORAGE_DIR is required",
+		},
+		{
+			name: "s3 needs a bucket and credentials",
+			env: map[string]string{
+				"STORAGE_BACKEND": config.BackendS3,
+				"STORAGE_DIR":     "",
+			},
+			wantErr: "S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY required",
+		},
+		{
+			name: "s3 needs the credentials even with a bucket",
+			env: map[string]string{
+				"STORAGE_BACKEND": config.BackendS3,
+				"STORAGE_DIR":     "",
+				"S3_BUCKET":       "uploads",
+			},
+			wantErr: "S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY required",
+		},
+		{
+			name:    "an unknown backend is rejected",
+			env:     map[string]string{"STORAGE_BACKEND": "azure-blob"},
+			wantErr: `must be "local" or "s3"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, requiredEnv())
+			addEnv(t, tc.env)
+
+			_, err := config.Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestStorageBackendS3NeedsNoDirectory proves the two backends require
+// disjoint settings: choosing s3 must not also demand STORAGE_DIR.
+func TestStorageBackendS3NeedsNoDirectory(t *testing.T) {
+	setEnv(t, requiredEnv())
+	addEnv(t, map[string]string{
+		"STORAGE_BACKEND":      config.BackendS3,
+		"STORAGE_DIR":          "",
+		"S3_ENDPOINT":          "http://minio:9000",
+		"S3_BUCKET":            "uploads",
+		"S3_ACCESS_KEY_ID":     "access",
+		"S3_SECRET_ACCESS_KEY": "secret-access-key",
+	})
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+
+	assert.Equal(t, config.BackendS3, cfg.Storage.Backend)
+	assert.Equal(t, "uploads", cfg.S3.Bucket)
+	assert.True(t, cfg.S3.UsePathStyle, "MinIO needs path-style addressing")
+	assert.Equal(t, "us-east-1", cfg.S3.Region)
+	assert.Contains(t, cfg.Secrets(), "secret-access-key",
+		"the S3 secret must be scrubbed from errors like the other credentials")
 }

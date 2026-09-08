@@ -137,11 +137,10 @@ func run(args []string, stdout *os.File) error {
 		return nil
 	}
 
-	blobs, err := storage.NewLocal(cfg.StorageDir)
+	blobs, err := newBlobStore(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "blob storage ready", "root", blobs.Root())
 
 	store := db.NewStore(pool)
 
@@ -221,6 +220,44 @@ func startAPI(ctx context.Context, g *errgroup.Group, deps apihttp.Deps) error {
 		return nil
 	})
 	return nil
+}
+
+// newBlobStore builds the configured BlobStore.
+//
+// The object store is the right choice whenever the API and the worker run
+// as separate processes: the API writes an upload's PDFs and the worker
+// reads them, and with the local backend that only works if both see the
+// same filesystem.
+func newBlobStore(ctx context.Context, cfg config.Config, logger *slog.Logger) (storage.BlobStore, error) {
+	switch cfg.Storage.Backend {
+	case config.BackendS3:
+		store, err := storage.NewS3(ctx, cfg.S3)
+		if err != nil {
+			return nil, err
+		}
+		logger.InfoContext(ctx, "blob storage ready",
+			"backend", config.BackendS3,
+			"bucket", store.Bucket(),
+			"endpoint", cfg.S3.Endpoint,
+		)
+		return store, nil
+
+	case config.BackendLocal:
+		store, err := storage.NewLocal(cfg.StorageDir)
+		if err != nil {
+			return nil, err
+		}
+		logger.InfoContext(ctx, "blob storage ready",
+			"backend", config.BackendLocal,
+			"root", store.Root(),
+		)
+		return store, nil
+
+	default:
+		// config.Load rejects anything else, so reaching this means the
+		// two have drifted apart.
+		return nil, fmt.Errorf("unsupported storage backend %q", cfg.Storage.Backend)
+	}
 }
 
 // newPipeline builds the analysis saga and the upstream clients it drives.

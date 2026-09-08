@@ -155,9 +155,9 @@ func TestAnalyzeRejectsUnusableReplies(t *testing.T) {
 			wantErr: "missing the required top-level keys [chart_data]",
 		},
 		{
-			name:    "an empty currency",
+			name:    "no currency anywhere",
 			content: `{"analysis": {"currency": ""}, "chart_data": {}, "transactions": []}`,
-			wantErr: "analysis.currency is empty",
+			wantErr: "no currency was reported",
 		},
 		{
 			name:    "a wrongly typed member",
@@ -282,4 +282,117 @@ func TestAnalyzeRefusesZeroStatements(t *testing.T) {
 
 	_, err := client.Analyze(t.Context(), nil)
 	require.Error(t, err)
+}
+
+// promptShapedReply is the output structure that prompts/analysis_system.md
+// actually asks the model for, trimmed to one entry per array. It exists so
+// a change to either the prompt or these structs cannot silently stop the
+// other from working: this is the contract between them.
+const promptShapedReply = `{
+  "meta": {
+    "currency": "EUR",
+    "period_covered": {"start": "2025-01-01", "end": "2025-03-31"},
+    "statements_processed": 3,
+    "extraction_issues": [],
+    "reconciliation": [{"statement_period": "2025-01", "expected_delta": 100, "actual_delta": 100, "matches": true}]
+  },
+  "accounts": [{"bank": "Example Bank", "holder": "A Person", "account_masked": "****1234",
+                "period_start": "2025-01-01", "period_end": "2025-01-31",
+                "opening_balance": 1000, "closing_balance": 1100}],
+  "transactions": [
+    {"date": "2025-01-05", "description": "SALARY", "counterparty": "ACME",
+     "amount": 3000, "direction": "credit", "balance_after": 4000, "type": null,
+     "category": "income", "essential": false, "recurring": true},
+    {"date": "2025-01-09", "description": "SUPERMARKET", "counterparty": "Shop",
+     "amount": 42.75, "direction": "debit", "balance_after": null, "type": "card",
+     "category": "groceries", "essential": true, "recurring": false}
+  ],
+  "analysis": {
+    "monthly_summary": [{"month": "2025-01", "income": 3000, "spending": 42.75, "net": 2957.25,
+                         "savings_rate_pct": 98.6, "essential": 42.75, "discretionary": 0}],
+    "category_totals": [{"category": "groceries", "total": 42.75, "pct_of_spending": 100,
+                         "monthly_avg": 14.25, "trend": "stable"}],
+    "recurring_payments": [{"counterparty": "ACME", "amount": 3000, "cadence": "monthly",
+                            "category": "income", "flag": null}],
+    "top_merchants": [{"merchant": "Shop", "total": 42.75, "count": 1}],
+    "anomalies": [],
+    "key_insights": ["Spending is stable"]
+  },
+  "savings_plan": {
+    "target_monthly_savings": 500, "target_savings_rate_pct": 16.7,
+    "projected_3_month_savings": 1500,
+    "category_budgets": [{"category": "groceries", "current_monthly_avg": 14.25,
+                          "proposed_cap": 12, "monthly_saving": 2.25}],
+    "recommended_cuts": [{"rank": 1, "action": "Cancel unused subscription", "category": "subscriptions",
+                          "estimated_monthly_saving": 9.99, "evidence": "charged monthly", "effort": "low"}],
+    "quick_wins": [], "habits": [], "risks": []
+  },
+  "chart_data": {
+    "present": {
+      "monthly_income_vs_spending": {"labels": ["2025-01"], "income": [3000], "spending": [42.75], "net": [2957.25]},
+      "category_breakdown": {"labels": ["groceries"], "values": [42.75]},
+      "monthly_by_category": {"labels": ["2025-01"], "series": [{"category": "groceries", "values": [42.75]}]},
+      "essential_vs_discretionary": {"labels": ["2025-01"], "essential": [42.75], "discretionary": [0]},
+      "balance_over_time": {"dates": ["2025-01-05"], "balances": [4000]}
+    },
+    "forecast": {
+      "labels": ["2025-04"], "baseline_spending": [42.75], "planned_spending": [40],
+      "baseline_savings": [500], "planned_savings": [520],
+      "cumulative_savings_baseline": [500], "cumulative_savings_planned": [520],
+      "category_budgets": {"labels": ["groceries"], "current": [14.25], "proposed": [12]},
+      "assumptions": ["income stays flat"]
+    }
+  },
+  "disclaimer": "Budgeting guidance, not financial advice."
+}`
+
+func TestAnalyzeAcceptsThePromptsOutputShape(t *testing.T) {
+	t.Parallel()
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, chatReply(promptShapedReply))
+	})
+
+	resp, err := client.Analyze(t.Context(), []Statement{{Markdown: "# January"}})
+	require.NoError(t, err)
+
+	// The prompt reports these under meta, not under analysis.
+	assert.Equal(t, "EUR", resp.Currency())
+	assert.Equal(t, "2025-01-01", resp.PeriodStart())
+	assert.Equal(t, "2025-03-31", resp.PeriodEnd())
+	assert.Empty(t, resp.Analysis.Currency, "the shipped prompt puts currency in meta")
+
+	require.Len(t, resp.Transactions, 2)
+	assert.Equal(t, "credit", resp.Transactions[0].Direction)
+	assert.Equal(t, "3000", resp.Transactions[0].Amount.String())
+	assert.Nil(t, resp.Transactions[1].BalanceAfter, "a null balance stays absent")
+	assert.Equal(t, "groceries", resp.Transactions[1].Category)
+	assert.True(t, resp.Transactions[1].Essential)
+
+	// The sections that become jsonb columns are carried through.
+	assert.NotEmpty(t, resp.Analysis.MonthlySummary)
+	assert.NotEmpty(t, resp.Analysis.CategoryTotals)
+	assert.NotEmpty(t, resp.Analysis.RecurringPayments)
+	assert.NotEmpty(t, resp.Analysis.KeyInsights)
+	assert.NotEmpty(t, resp.SavingsPlan)
+	assert.NotEmpty(t, resp.ChartData.Present)
+	assert.NotEmpty(t, resp.ChartData.Forecast)
+}
+
+// TestCurrencyFallsBackToAnalysis covers a prompt that reports the currency
+// the older way, so moving it back would not break the pipeline.
+func TestCurrencyFallsBackToAnalysis(t *testing.T) {
+	t.Parallel()
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, chatReply(`{
+		  "analysis": {"currency": "GBP", "period_start": "2025-02-01", "period_end": "2025-02-28"},
+		  "chart_data": {}, "transactions": []
+		}`))
+	})
+
+	resp, err := client.Analyze(t.Context(), []Statement{{Markdown: "x"}})
+	require.NoError(t, err)
+	assert.Equal(t, "GBP", resp.Currency())
+	assert.Equal(t, "2025-02-01", resp.PeriodStart())
 }

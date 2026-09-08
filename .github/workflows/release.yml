@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege at the top: jobs that need more ask for it themselves.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/bankstmt-analyzer
+  CHART_REPO: ${{ github.repository_owner }}/charts
+
+jobs:
+  binaries:
+    name: Binaries and GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to create the release and upload its assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # GoReleaser needs the full history to build a changelog.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          # The default token is enough to publish a release on this repo;
+          # no personal access token is involved anywhere in this workflow.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: Multi-arch image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Pushes to ghcr.io under this repository's own owner.
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    # The chart's appVersion names the image, so it is only published once
+    # that image actually exists.
+    needs: image
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      - name: Log in to ghcr.io
+        # Helm's OCI login reads the password from stdin.
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ${{ env.REGISTRY }} \
+                --username ${{ github.actor }} --password-stdin
+
+      - name: Package and push
+        run: |
+          # Both are the tag without its leading v. appVersion has to match
+          # the published image tag exactly, because the chart derives the
+          # image reference from it: docker/metadata-action's {{version}}
+          # pattern strips the v, so tag v1.2.3 publishes image :1.2.3 and
+          # an appVersion of v1.2.3 would point the chart at an image that
+          # was never pushed.
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/bankstmt-analyzer \
+            --version "$version" \
+            --app-version "$version" \
+            --destination dist
+          helm push "dist/bankstmt-analyzer-${version}.tgz" \
+            "oci://${{ env.REGISTRY }}/${{ env.CHART_REPO }}"

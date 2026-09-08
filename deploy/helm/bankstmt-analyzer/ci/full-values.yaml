@@ -1,0 +1,60 @@
+# Everything optional switched on at once, so the templates that are off by
+# default are still rendered and validated in CI.
+config:
+  existingSecret: bankstmt-analyzer-credentials
+
+env: development
+logLevel: debug
+
+extraEnv:
+  WORKER_CONCURRENCY: "8"
+  TASKQ_LEASE_DURATION: 20m
+
+storage:
+  backend: s3
+  s3:
+    endpoint: http://minio.minio.svc.cluster.local:9000
+    bucket: bankstmt-uploads
+    region: eu-west-1
+    usePathStyle: true
+    prefix: production
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: bankstmt.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bankstmt-tls
+      hosts:
+        - bankstmt.example.com
+
+api:
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+worker:
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 75
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+imagePullSecrets:
+  - name: ghcr-credentials

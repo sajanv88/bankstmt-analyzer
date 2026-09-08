@@ -47,9 +47,9 @@ func buildAnalysis(uploadID uuid.UUID, resp *llm.Response) (db.NewAnalysis, erro
 	analysis := db.CreateAnalysisParams{
 		ID:                uuid.New(),
 		UploadID:          uploadID,
-		Currency:          strings.TrimSpace(resp.Analysis.Currency),
-		PeriodStart:       optionalDate(resp.Analysis.PeriodStart),
-		PeriodEnd:         optionalDate(resp.Analysis.PeriodEnd),
+		Currency:          resp.Currency(),
+		PeriodStart:       optionalDate(resp.PeriodStart()),
+		PeriodEnd:         optionalDate(resp.PeriodEnd()),
 		MonthlySummary:    jsonOrNil(resp.Analysis.MonthlySummary),
 		CategoryTotals:    jsonOrNil(resp.Analysis.CategoryTotals),
 		RecurringPayments: jsonOrNil(resp.Analysis.RecurringPayments),

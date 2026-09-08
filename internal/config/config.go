@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -38,8 +39,12 @@ type Config struct {
 	// flag sets the same behaviour; either one is enough.
 	MigrateOnStart bool `env:"MIGRATE_ON_START" envDefault:"false"`
 
-	// StorageDir is the local directory backing the default BlobStore.
-	StorageDir string `env:"STORAGE_DIR,required,notEmpty"`
+	// StorageDir is the directory backing the local BlobStore. Required
+	// when Storage.Backend is "local", ignored otherwise.
+	StorageDir string `env:"STORAGE_DIR"`
+
+	Storage StorageConfig `envPrefix:"STORAGE_"`
+	S3      S3Config      `envPrefix:"S3_"`
 
 	OCR    AzureOCR    `envPrefix:"AZURE_OCR_"`
 	OpenAI AzureOpenAI `envPrefix:"AZURE_OPENAI_"`
@@ -48,6 +53,46 @@ type Config struct {
 	Worker WorkerConfig `envPrefix:"WORKER_"`
 	Queue  QueueConfig  `envPrefix:"TASKQ_"`
 	Upload UploadConfig `envPrefix:"UPLOAD_"`
+}
+
+// Storage backend names.
+const (
+	// BackendLocal writes uploaded PDFs to a directory on disk. The API
+	// and the worker must share that directory, so it only suits a
+	// single-process deployment or a shared volume.
+	BackendLocal = "local"
+	// BackendS3 writes them to an S3-compatible object store: MinIO, AWS
+	// S3, or anything else speaking the same API. Both roles reach the
+	// same bucket over the network, so no shared filesystem is involved.
+	BackendS3 = "s3"
+)
+
+// StorageConfig selects which BlobStore implementation to use.
+type StorageConfig struct {
+	Backend string `env:"BACKEND" envDefault:"local"`
+}
+
+// S3Config addresses an S3-compatible object store.
+type S3Config struct {
+	// Endpoint is the service URL, for example http://minio:9000. Leave
+	// it empty to use AWS S3 proper, where the SDK resolves the endpoint
+	// from the region.
+	Endpoint string `env:"ENDPOINT"`
+	Bucket   string `env:"BUCKET"`
+	// Region is required by the signing algorithm even where the store
+	// ignores it, which MinIO does.
+	Region          string `env:"REGION" envDefault:"us-east-1"`
+	AccessKeyID     string `env:"ACCESS_KEY_ID"`
+	SecretAccessKey string `env:"SECRET_ACCESS_KEY"`
+	// UsePathStyle addresses buckets as endpoint/bucket/key rather than
+	// bucket.endpoint/key. MinIO and most other S3-compatible stores need
+	// this; AWS S3 prefers it off.
+	UsePathStyle bool `env:"USE_PATH_STYLE" envDefault:"true"`
+	// Prefix namespaces every key, so one bucket can host several
+	// environments.
+	Prefix string `env:"PREFIX"`
+	// Timeout bounds a single object operation.
+	Timeout time.Duration `env:"TIMEOUT" envDefault:"2m"`
 }
 
 // AzureOCR addresses the Azure-hosted Mistral OCR deployment.
@@ -133,8 +178,8 @@ func (c Config) IsProduction() bool { return c.Env == EnvProduction }
 // Secrets returns the values that must never appear in a stored failure
 // reason or a log line. The pipeline uses it to scrub upstream errors.
 func (c Config) Secrets() []string {
-	out := make([]string, 0, 3)
-	for _, s := range []string{c.OCR.APIKey, c.OpenAI.APIKey, c.DatabaseURL} {
+	out := make([]string, 0, 4)
+	for _, s := range []string{c.OCR.APIKey, c.OpenAI.APIKey, c.DatabaseURL, c.S3.SecretAccessKey} {
 		if s != "" {
 			out = append(out, s)
 		}
@@ -143,6 +188,9 @@ func (c Config) Secrets() []string {
 }
 
 func (c Config) validate() error {
+	if err := c.validateStorage(); err != nil {
+		return err
+	}
 	if c.Upload.MaxFiles < 1 {
 		return fmt.Errorf("config: UPLOAD_MAX_FILES must be >= 1, got %d", c.Upload.MaxFiles)
 	}
@@ -156,4 +204,36 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: WORKER_MAX_RETRY must be >= 0, got %d", c.Worker.MaxRetry)
 	}
 	return nil
+}
+
+// validateStorage checks the settings the selected backend actually needs.
+// They cannot be marked required in the struct tags because which ones
+// matter depends on STORAGE_BACKEND.
+func (c Config) validateStorage() error {
+	switch c.Storage.Backend {
+	case BackendLocal:
+		if strings.TrimSpace(c.StorageDir) == "" {
+			return fmt.Errorf("config: STORAGE_DIR is required when STORAGE_BACKEND is %q", BackendLocal)
+		}
+		return nil
+	case BackendS3:
+		var missing []string
+		if strings.TrimSpace(c.S3.Bucket) == "" {
+			missing = append(missing, "S3_BUCKET")
+		}
+		if strings.TrimSpace(c.S3.AccessKeyID) == "" {
+			missing = append(missing, "S3_ACCESS_KEY_ID")
+		}
+		if strings.TrimSpace(c.S3.SecretAccessKey) == "" {
+			missing = append(missing, "S3_SECRET_ACCESS_KEY")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("config: %s required when STORAGE_BACKEND is %q",
+				strings.Join(missing, ", "), BackendS3)
+		}
+		return nil
+	default:
+		return fmt.Errorf("config: STORAGE_BACKEND must be %q or %q, got %q",
+			BackendLocal, BackendS3, c.Storage.Backend)
+	}
 }

@@ -1,0 +1,49 @@
+version: 2
+
+project_name: bankstmt-analyzer
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: bankstmt-analyzer
+    main: ./cmd/api
+    binary: bankstmt-analyzer
+    env:
+      # A static binary, matching what the container image ships.
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      # A glob that matches nothing fails the build, so this lists only
+      # files that exist. Add LICENSE here once the repository has one.
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  prerelease: auto

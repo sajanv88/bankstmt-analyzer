@@ -1,0 +1,21 @@
+{{- if and (eq .Values.storage.backend "local") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "bankstmt-analyzer.fullname" . }}-uploads
+  labels:
+    {{- include "bankstmt-analyzer.labels" . | nindent 4 }}
+  annotations:
+    # Uploaded statements outlive a `helm uninstall`; deleting them is a
+    # deliberate act, not a side effect of removing the release.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.storage.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.size | quote }}
+  {{- with .Values.storage.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

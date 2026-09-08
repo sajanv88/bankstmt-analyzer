@@ -116,27 +116,13 @@ func (l *Local) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// resolve maps a store key onto an absolute path inside the root,
-// rejecting anything that would escape it.
+// resolve maps a store key onto an absolute path inside the root.
 func (l *Local) resolve(key string) (string, error) {
-	if strings.TrimSpace(key) == "" {
-		return "", errors.New("storage: key must not be empty")
+	clean, err := validateKey(key)
+	if err != nil {
+		return "", err
 	}
-	// Reject leading separators before consulting the OS. On Windows
-	// filepath.IsAbs("/etc/passwd") is false, so relying on IsAbs alone
-	// would quietly rewrite a Unix-style absolute key into a relative one
-	// there while rejecting it on Linux. Keys mean the same thing on every
-	// platform, so the check has to be platform-independent too.
-	if strings.HasPrefix(key, "/") || strings.HasPrefix(key, `\`) || hasDriveLetter(key) {
-		return "", fmt.Errorf("storage: key %q escapes the store root", key)
-	}
-	// Keys are always slash-separated; convert before cleaning so a
-	// Windows-style separator cannot sneak past the traversal check.
-	clean := filepath.Clean(filepath.FromSlash(key))
-	if filepath.IsAbs(clean) || isParentTraversal(clean) {
-		return "", fmt.Errorf("storage: key %q escapes the store root", key)
-	}
-	path := filepath.Join(l.root, clean)
+	path := filepath.Join(l.root, filepath.FromSlash(clean))
 	if path != l.root && !strings.HasPrefix(path, l.root+string(filepath.Separator)) {
 		return "", fmt.Errorf("storage: key %q escapes the store root", key)
 	}
@@ -145,23 +131,3 @@ func (l *Local) resolve(key string) (string, error) {
 
 // Local satisfies BlobStore.
 var _ BlobStore = (*Local)(nil)
-
-// isParentTraversal reports whether a cleaned path starts by stepping out
-// of its directory. It matches ".." exactly or as a leading path element,
-// so an ordinary key such as "..archive.pdf" is not caught by mistake.
-func isParentTraversal(clean string) bool {
-	return clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator))
-}
-
-// hasDriveLetter reports whether key begins with a Windows drive specifier
-// such as "C:". filepath.VolumeName only recognises one when running on
-// Windows, so testing for it directly keeps a key valid or invalid on every
-// platform alike rather than letting the same key be rejected on Windows
-// and silently accepted as a filename on Linux.
-func hasDriveLetter(key string) bool {
-	if len(key) < 2 || key[1] != ':' {
-		return false
-	}
-	c := key[0]
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}

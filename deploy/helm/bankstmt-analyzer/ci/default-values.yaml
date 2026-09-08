@@ -1,0 +1,20 @@
+# Chart-managed Secret: the simplest install, and the path `helm lint`
+# would otherwise trip over because the required credentials are empty by
+# default.
+storage:
+  backend: s3
+  s3:
+    endpoint: http://minio:9000
+    bucket: bankstmt-uploads
+    accessKeyId: lint-only-access-key
+    secretAccessKey: lint-only-secret-key
+
+config:
+  databaseUrl: postgres://bankstmt:bankstmt@postgres:5432/bankstmt?sslmode=disable
+  azure:
+    ocrEndpoint: https://ocr.example.com
+    ocrApiKey: lint-only-ocr-key
+    ocrModel: mistral-ocr-2503
+    openaiEndpoint: https://openai.example.com
+    openaiApiKey: lint-only-openai-key
+    openaiDeployment: gpt-4o

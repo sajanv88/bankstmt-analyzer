@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bankstmt-analyzer.fullname" . }}
+  labels:
+    {{- include "bankstmt-analyzer.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "bankstmt-analyzer.selectorLabels" . | nindent 4 }}
+    # The worker runs no HTTP server, so only API pods back this Service.
+    app.kubernetes.io/component: api

@@ -1,8 +1,11 @@
 # Build output
 /bin/
 /dist/
-bankstmt-analyzer
-bankstmt-analyzer.exe
+# Anchored to the repository root on purpose: an unanchored pattern also
+# matches deploy/helm/bankstmt-analyzer/ and would silently exclude the
+# whole chart from the repository.
+/bankstmt-analyzer
+/bankstmt-analyzer.exe
 
 # Local runtime state
 .env
