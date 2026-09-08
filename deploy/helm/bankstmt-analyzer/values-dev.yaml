@@ -13,6 +13,7 @@ env: development
 logLevel: debug
 
 image:
+  repository: ghcr.io/sajanv88/bankstmt-analyzer
   # Development moves faster than release tags, so track a mutable tag and
   # always re-pull it. Neither is appropriate in production, where the
   # chart's appVersion pins an immutable release.
