@@ -1,0 +1,57 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - copyloopvar
+    - goconst
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - wrapcheck
+  settings:
+    wrapcheck:
+      ignore-package-globs:
+        # Every error crossing one of these boundaries was already wrapped
+        # with a package prefix where it was produced; wrapping it again in
+        # main would only stutter. errgroup.Wait returns whichever error one
+        # of our own goroutines produced, so it is covered by the same
+        # reasoning.
+        - github.com/sajanv88/bankstmt-analyzer/*
+        - golang.org/x/sync/errgroup
+      ignore-sigs:
+        # Errors this codebase deliberately returns verbatim: they are
+        # already wrapped by the package that produced them.
+        - .Errorf(
+        - errors.New(
+        - errors.Join(
+        - errors.Unwrap(
+        - .Wrap(
+        - .WrapF(
+  exclusions:
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Generated code is not ours to lint.
+      - path: internal/db/(db|models|querier|.*\.sql)\.go
+        linters:
+          - revive
+          - wrapcheck
+          - unused
+      # Tests wrap nothing and assert plenty.
+      - path: _test\.go
+        linters:
+          - wrapcheck
+          - goconst
+
+formatters:
+  enable:
+    - gofmt

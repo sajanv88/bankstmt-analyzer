@@ -1,0 +1,27 @@
+# Local development dependencies. The service itself runs on the host via
+# `make run`, so a code change needs no image rebuild.
+services:
+  postgres:
+    image: postgres:16
+    container_name: bankstmt-postgres
+    environment:
+      POSTGRES_USER: bankstmt
+      POSTGRES_PASSWORD: bankstmt
+      POSTGRES_DB: bankstmt
+    ports:
+      # Overridable because 5432 is often already taken by a system-wide
+      # Postgres. Set POSTGRES_PORT in .env and match it in DATABASE_URL;
+      # compose and the Makefile both read that file.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Without this, `docker compose up -d` returns before Postgres is
+      # accepting connections and the first `make run` fails its ping.
+      test: ["CMD-SHELL", "pg_isready -U bankstmt -d bankstmt"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres-data:

@@ -1,0 +1,15 @@
+# Build output
+/bin/
+/dist/
+bankstmt-analyzer
+bankstmt-analyzer.exe
+
+# Local runtime state
+.env
+.data/
+*.pdf
+
+# Go
+*.test
+*.out
+coverage.*

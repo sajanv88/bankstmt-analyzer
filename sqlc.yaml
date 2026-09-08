@@ -1,0 +1,32 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # sqlc reads the whole goose migrations directory, so the schema it
+    # generates against is by definition the schema goose will have applied
+    # and a new migration needs no change here. The cost is one unused
+    # generated model, TaskqMessage, for taskQ's own broker table: that
+    # table lives in our migrations, so sqlc sees it. Nothing queries it —
+    # taskQ owns it — and listing schema files individually to hide it
+    # would let sqlc.yaml silently drift from db/migrations instead.
+    schema: db/migrations
+    queries: internal/db/queries
+    gen:
+      go:
+        package: db
+        out: internal/db
+        sql_package: pgx/v5
+        emit_json_tags: true
+        # Querier lets handlers and pipeline steps depend on an interface,
+        # which is what makes the fake-backed tests possible.
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        overrides:
+          # Application-assigned uuids are google/uuid values everywhere
+          # else in the codebase; matching that here avoids converting at
+          # every call site.
+          - db_type: "uuid"
+            go_type: "github.com/google/uuid.UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type: "github.com/google/uuid.NullUUID"
