@@ -26,9 +26,14 @@ config:
 storage:
   backend: s3
   s3:
-    # An in-cluster MinIO. Adjust the service name and namespace to match
-    # wherever it actually runs.
-    endpoint: http://100.95.97.56:9000
+    # The in-cluster MinIO Service, not its tailnet address. The pods are
+    # not on the tailnet, so a 100.x address or a *.ts.net MagicDNS name
+    # never connects: the startup HeadBucket hangs until its context is
+    # cancelled and the API dies with "StatusCode: 0 ... canceled". The
+    # ts-minio-* proxies in the tailscale namespace exist to publish MinIO
+    # outward; in-cluster traffic should not go through them.
+    # Adjust the service name and namespace to match wherever it runs.
+    endpoint: http://minio-api.minio.svc.cluster.local:9000
     bucket: bankstmt-uploads
     usePathStyle: true
     prefix: dev
