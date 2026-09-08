@@ -13,6 +13,11 @@
 //	@tag.description			Submitting statements and reading their analysis
 //	@tag.name					health
 //	@tag.description			Liveness and readiness probes
+//
+//	@securityDefinitions.apikey	ApiKeyAuth
+//	@in							header
+//	@name						api-key
+//	@description				32 hexadecimal characters, as produced by `openssl rand -hex 16`. Required on every /api/v1 endpoint. The liveness and readiness probes do not take it.
 package main
 
 import (

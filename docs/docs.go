@@ -23,6 +23,11 @@ const docTemplate = `{
     "paths": {
         "/api/v1/uploads": {
             "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Accepts between 1 and 12 PDF bank statements as multipart/form-data under the field ` + "`" + `files` + "`" + `, each at most 20 MB. Files are validated by magic bytes rather than by the client-supplied content type. The response returns immediately; poll the status endpoint for progress.",
                 "consumes": [
                     "multipart/form-data"
@@ -56,6 +61,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_http.Problem"
                         }
                     },
+                    "401": {
+                        "description": "Missing or invalid api-key header",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
                     "413": {
                         "description": "A file, or the request as a whole, is too large",
                         "schema": {
@@ -79,6 +90,11 @@ const docTemplate = `{
         },
         "/api/v1/uploads/{id}/status": {
             "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Reports the processing state of an upload. ` + "`" + `failure_reason` + "`" + ` is present only when the status is ` + "`" + `failed` + "`" + `, and ` + "`" + `analysis_id` + "`" + ` only when it is ` + "`" + `completed` + "`" + `.",
                 "produces": [
                     "application/json"
@@ -110,6 +126,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_http.Problem"
                         }
                     },
+                    "401": {
+                        "description": "Missing or invalid api-key header",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
                     "404": {
                         "description": "No such upload",
                         "schema": {
@@ -127,6 +149,11 @@ const docTemplate = `{
         },
         "/api/v1/uploads/{id}/visualization": {
             "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "description": "Returns chart data for a completed upload. The ` + "`" + `present` + "`" + ` series are recomputed from the recorded transactions for the requested window, so they always match the window asked for; ` + "`" + `forecast` + "`" + ` is the model's projection, served as stored. The default window is the last 3 months that carry data. ` + "`" + `months` + "`" + ` (1-12) counts back from the last month with data; ` + "`" + `from` + "`" + ` and ` + "`" + `to` + "`" + ` (YYYY-MM) override it, and supplying just one of them anchors that end.",
                 "produces": [
                     "application/json"
@@ -173,6 +200,12 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Invalid id or window parameters",
+                        "schema": {
+                            "$ref": "#/definitions/internal_http.Problem"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid api-key header",
                         "schema": {
                             "$ref": "#/definitions/internal_http.Problem"
                         }
@@ -556,6 +589,14 @@ const docTemplate = `{
                     "example": 184
                 }
             }
+        }
+    },
+    "securityDefinitions": {
+        "ApiKeyAuth": {
+            "description": "32 hexadecimal characters, as produced by ` + "`" + `openssl rand -hex 16` + "`" + `. Required on every /api/v1 endpoint. The liveness and readiness probes do not take it.",
+            "type": "apiKey",
+            "name": "api-key",
+            "in": "header"
         }
     },
     "tags": [

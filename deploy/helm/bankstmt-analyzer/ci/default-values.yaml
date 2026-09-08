@@ -11,6 +11,7 @@ storage:
 
 config:
   databaseUrl: postgres://bankstmt:bankstmt@postgres:5432/bankstmt?sslmode=disable
+  apiKey: lintonlyapikey0000000000000000ff
   azure:
     ocrEndpoint: https://ocr.example.com
     ocrApiKey: lint-only-ocr-key

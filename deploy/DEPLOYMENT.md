@@ -45,7 +45,7 @@ to what you would expect.
 | Deployment | `<release>-api` | Runs `--api`. Liveness `/healthz`, readiness `/readyz`, startup probe allowing up to 60 s. |
 | Deployment | `<release>-worker` | Runs `--worker`. No ports and no probes: it serves nothing, and its real liveness is the queue draining, which Kubernetes cannot observe. |
 | Job | `<release>-migrate-<revision>` | `pre-install`/`pre-upgrade` hook at weight `-5`. Runs `--migrate --api=false --worker=false` and exits. |
-| Service | `<release>` | ClusterIP, port 80 → container 8080. |
+| Service | `<release>` | ClusterIP, port 80 → container 8080. `/api/v1` needs the `api-key` header; the probes do not. |
 | Secret | `<release>-config` | Only when `config.existingSecret` is empty. |
 | Ingress, HPAs, PDBs, PVC | — | All optional, all off or minimal by default. |
 | ServiceAccount | `<release>` | Created by default; no RBAC is bound to it, because the service calls no Kubernetes API. |
@@ -93,6 +93,7 @@ refuses to start.
 ```sh
 kubectl create secret generic bankstmt-analyzer-credentials \
   --namespace bankstmt \
+  --from-literal=API_KEY="$(openssl rand -hex 16)" \
   --from-literal=DATABASE_URL='postgres://user:pass@host:5432/bankstmt?sslmode=require' \
   --from-literal=AZURE_OCR_ENDPOINT='https://<resource>.services.ai.azure.com' \
   --from-literal=AZURE_OCR_API_KEY='<ocr-key>' \
@@ -482,13 +483,19 @@ port-forward, with a small real statement:
 ```sh
 kubectl -n bankstmt port-forward svc/bankstmt 8080:80 &
 
+# The key the Secret carries; every /api/v1 call needs it.
+key=$(kubectl -n bankstmt get secret bankstmt-analyzer-credentials \
+  -o jsonpath='{.data.API_KEY}' | base64 -d)
+
 id=$(curl -s -X POST localhost:8080/api/v1/uploads \
+  -H "api-key: $key" \
   -F "files=@statement.pdf" | jq -r .id)
 
 # pending -> processing -> completed, typically a minute or two
-watch -n5 "curl -s localhost:8080/api/v1/uploads/$id/status | jq"
+watch -n5 "curl -s -H 'api-key: $key' localhost:8080/api/v1/uploads/$id/status | jq"
 
-curl -s "localhost:8080/api/v1/uploads/$id/visualization" | jq .summary
+curl -s -H "api-key: $key" \
+  "localhost:8080/api/v1/uploads/$id/visualization" | jq .summary
 ```
 
 This exercises every external dependency in one pass: Postgres on upload,
@@ -509,6 +516,9 @@ is logged, queued or stored.
 | Uploads stick in `processing` for ~15 minutes | A worker was killed mid-hop; the lease has to expire before redelivery | [Draining workers](#draining-workers) |
 | `failed` with `ocr:` or `analyze:` | Azure rejected the call — bad key, wrong endpoint shape, quota, or content filter | Worker logs carry the retryable/non-retryable classification; the budget is `WORKER_MAX_RETRY` per hop |
 | Upgrade hangs, then fails | Migration Job never completed | `kubectl -n bankstmt logs job/bankstmt-migrate-<revision>` — the failed Job is kept for exactly this |
+| Every `/api/v1` call returns 401 | Wrong, missing or stale `api-key` header, or the Secret was rotated without restarting the pods | The 401 is deliberately identical for missing, malformed and wrong keys — compare against the Secret rather than guessing |
+| Pods crash naming `API_KEY` | Not 32 hexadecimal characters; a 64-character value is a 32-*byte* key | `openssl rand -hex 16` produces the right shape |
+| Browser calls fail preflight with no 401 in the logs | The `api-key` header is not in the allow-list | The chart's CORS config includes it; a gateway in front may not |
 | `visualization` returns 409 | The upload is not `completed` yet | Poll `/status` first; this is the documented contract, not a fault |
 | Swagger UI reachable in production | `env` is not `production` | Set `env: production`; the route is then absent entirely |
 
@@ -545,10 +555,20 @@ What the chart already does, so you know what you would be weakening:
 What is yours:
 
 - `HTTP_CORS_ALLOWED_ORIGINS` defaults to `*`. Set it via `extraEnv`.
-- There is **no authentication on the API**. Anyone who can reach the
-  Ingress can upload statements, and anyone holding an upload's UUID can
-  read its analysis. Put it behind your own gateway, or keep it internal.
-- TLS is the Ingress's job; the service speaks plain HTTP on 8080.
+- **`API_KEY` is one shared secret, not a user model.** Every `/api/v1`
+  endpoint requires it in an `api-key` header, and the pods refuse to start
+  without a valid 32-hex value, so an install cannot end up unauthenticated
+  by omission. But one key means no per-caller identity, no scopes, and no
+  revocation short of rotating it for everyone. Anyone holding it can upload
+  statements and read any analysis whose UUID they have. Put a real gateway
+  in front if you need more than that.
+- **Rotating it is a two-step change.** Update the Secret, then restart both
+  Deployments — the chart cannot see an external Secret change, so nothing
+  rolls on its own. Callers using the old key start getting 401s the moment
+  the new pods are ready, so schedule it rather than doing it casually.
+- TLS is the Ingress's job; the service speaks plain HTTP on 8080. The key
+  travels in a plaintext header, so terminate TLS in front of it — on a
+  tailnet that is the operator's certificate, elsewhere it is yours.
 - Network policy: the pods need egress to Postgres, the bucket, and the two
   Azure endpoints, and nothing else.
 

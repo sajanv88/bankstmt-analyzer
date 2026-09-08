@@ -38,9 +38,11 @@ func newVisualizationHandler(store UploadStore, logger *slog.Logger) *visualizat
 //	@Param			to		query		string	false	"Last month, YYYY-MM"
 //	@Success		200		{object}	VisualizationResponse
 //	@Failure		400		{object}	Problem	"Invalid id or window parameters"
+//	@Failure		401		{object}	Problem	"Missing or invalid api-key header"
 //	@Failure		404		{object}	Problem	"No such upload"
 //	@Failure		409		{object}	Problem	"The upload is not completed"
 //	@Failure		500		{object}	Problem
+//	@Security		ApiKeyAuth
 //	@Router			/api/v1/uploads/{id}/visualization [get]
 func (h *visualizationHandler) get(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

@@ -44,6 +44,11 @@ func (d Deps) validate() error {
 		return errors.New("http: Deps.Blobs is required")
 	case d.Enqueuer == nil:
 		return errors.New("http: Deps.Enqueuer is required")
+	// Checked here as well as in config.Load, so that wiring the router
+	// with a zero Config fails loudly instead of quietly serving an
+	// unauthenticated API.
+	case d.Config.APIKey == "":
+		return errors.New("http: Deps.Config.APIKey is required")
 	default:
 		return nil
 	}
@@ -76,6 +81,13 @@ func NewRouter(deps Deps) (http.Handler, error) {
 	visualization := newVisualizationHandler(deps.Store, deps.Logger)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		// Everything under /api/v1 is behind the key. /healthz and
+		// /readyz stay open because kubelet probes cannot present a
+		// credential, and they disclose nothing but liveness; the Swagger
+		// document stays open because it only describes the API, and is
+		// not served in production at all.
+		r.Use(requireAPIKey(deps.Config.APIKey, deps.Logger))
+
 		r.Route("/uploads", func(r chi.Router) {
 			r.Post("/", uploads.create)
 			r.Get("/{id}/status", uploads.status)
@@ -99,7 +111,10 @@ func corsOptions(cfg config.Config) cors.Options {
 	return cors.Options{
 		AllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
-		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-Request-Id"},
+		// APIKeyHeader has to be listed: a browser preflight that does not
+		// see it in Access-Control-Allow-Headers blocks the real request,
+		// and the caller sees a CORS error rather than a 401.
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-Request-Id", APIKeyHeader},
 		ExposedHeaders: []string{"X-Request-Id"},
 		MaxAge:         300,
 	}

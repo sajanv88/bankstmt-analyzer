@@ -17,6 +17,9 @@ import (
 	apihttp "github.com/sajanv88/bankstmt-analyzer/internal/http"
 )
 
+// testAPIKey is a syntactically valid key: 32 hexadecimal characters.
+const testAPIKey = "0123456789abcdef0123456789abcdef"
+
 // fakePinger stands in for the pgx pool behind /readyz.
 type fakePinger struct{ err error }
 
@@ -42,7 +45,8 @@ func newTestServer(t *testing.T, opts ...func(*apihttp.Deps)) *testServer {
 
 	deps := apihttp.Deps{
 		Config: config.Config{
-			Env: config.EnvDevelopment,
+			Env:    config.EnvDevelopment,
+			APIKey: testAPIKey,
 			Upload: config.UploadConfig{
 				MaxFiles:     3,
 				MaxFileBytes: 1024,
@@ -63,8 +67,20 @@ func newTestServer(t *testing.T, opts ...func(*apihttp.Deps)) *testServer {
 	return &testServer{handler: handler, store: store, blobs: blobs, enqueuer: enqueuer}
 }
 
-// do issues a request against the router and returns the recorder.
+// do issues a request against the router and returns the recorder. It
+// supplies the api-key header unless the caller already set one, so the
+// tests that are about something else are not all rewritten to carry a
+// credential. Use doRaw to exercise the absence of the header.
 func (s *testServer) do(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	if req.Header.Get(apihttp.APIKeyHeader) == "" {
+		req.Header.Set(apihttp.APIKeyHeader, testAPIKey)
+	}
+	return s.doRaw(t, req)
+}
+
+// doRaw issues a request exactly as given, adding no headers.
+func (s *testServer) doRaw(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	s.handler.ServeHTTP(rec, req)

@@ -33,6 +33,7 @@ file. Copy `.env.example` to `.env` and fill it in.
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | pgx connection string. Backs both the application tables and the taskQ queue. |
+| `API_KEY` | Guards every `/api/v1` endpoint. Exactly 32 hexadecimal characters — `openssl rand -hex 16`. See [Authentication](#authentication). |
 | `STORAGE_DIR` | Directory holding uploaded PDFs. Required only when `STORAGE_BACKEND=local`. |
 | `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required only when `STORAGE_BACKEND=s3`. See [Storage](#storage). |
 | `AZURE_OCR_ENDPOINT` | Azure Mistral OCR endpoint. |
@@ -101,6 +102,29 @@ volume).
 Base path `/api/v1`. Every error is an RFC 7807 problem document served as
 `application/problem+json`.
 
+### Authentication
+
+Every `/api/v1` endpoint requires `API_KEY` in an `api-key` request header.
+The key is exactly 32 hexadecimal characters; the service refuses to start
+if `API_KEY` is missing or the wrong shape, so a deployment cannot end up
+silently unauthenticated.
+
+```sh
+export API_KEY=$(openssl rand -hex 16)
+curl -s -H "api-key: $API_KEY" localhost:8080/api/v1/uploads/.../status
+```
+
+A missing, malformed or wrong key is a `401` problem document that says
+only that a valid key is required — distinguishing the three would tell an
+unauthenticated caller how close they got. The comparison is constant time,
+so a wrong key cannot be recovered a character at a time by measuring the
+rejection.
+
+`/healthz` and `/readyz` stay open, because kubelet cannot present a
+credential and they disclose nothing but liveness. The Swagger UI is open
+too, and describes the scheme: click **Authorize** and paste the key to try
+the endpoints from the browser.
+
 ### Upload statements
 
 Between 1 and 12 PDFs, each at most 20 MB, in the repeated `files` field.
@@ -108,7 +132,7 @@ Files are validated by their `%PDF-` magic bytes, not by the content type
 the client claims.
 
 ```sh
-curl -s -X POST localhost:8080/api/v1/uploads   -F "files=@january.pdf"   -F "files=@february.pdf"
+curl -s -X POST localhost:8080/api/v1/uploads   -H "api-key: $API_KEY"   -F "files=@january.pdf"   -F "files=@february.pdf"
 
 # 202 Accepted
 # {"id":"c6148f86-1e95-443a-836b-e7e949872e44","status":"pending"}
@@ -117,7 +141,7 @@ curl -s -X POST localhost:8080/api/v1/uploads   -F "files=@january.pdf"   -F "fi
 ### Poll the status
 
 ```sh
-curl -s localhost:8080/api/v1/uploads/c6148f86-.../status
+curl -s -H "api-key: $API_KEY" localhost:8080/api/v1/uploads/c6148f86-.../status
 
 # {"id":"c6148f86-...","status":"completed",
 #  "created_at":"2025-03-01T10:00:00Z","updated_at":"2025-03-01T10:04:12Z",
@@ -136,13 +160,13 @@ override it — supply just one to anchor that end.
 
 ```sh
 # default window
-curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization"
+curl -s -H "api-key: $API_KEY"   "localhost:8080/api/v1/uploads/c6148f86-.../visualization"
 
 # a single month
-curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization?months=1"
+curl -s -H "api-key: $API_KEY"   "localhost:8080/api/v1/uploads/c6148f86-.../visualization?months=1"
 
 # an explicit range
-curl -s "localhost:8080/api/v1/uploads/c6148f86-.../visualization?from=2025-01&to=2025-02"
+curl -s -H "api-key: $API_KEY"   "localhost:8080/api/v1/uploads/c6148f86-.../visualization?from=2025-01&to=2025-02"
 ```
 
 ```json
@@ -183,7 +207,7 @@ recomputed, so it is served as stored.
 ### Errors
 
 ```sh
-curl -s localhost:8080/api/v1/uploads/nope/status
+curl -s -H "api-key: $API_KEY" localhost:8080/api/v1/uploads/nope/status
 # {"type":"about:blank","title":"Bad Request","status":400,
 #  "detail":"The upload id must be a uuid.","instance":"/api/v1/uploads/nope/status",
 #  "request_id":"...","invalid_params":[{"name":"id","reason":"not a valid uuid"}]}
@@ -352,7 +376,7 @@ Put the credentials in a Secret you manage, so they stay out of Helm's
 release history:
 
 ```sh
-kubectl create secret generic bankstmt-analyzer-credentials   --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/bankstmt?sslmode=require'   --from-literal=AZURE_OCR_ENDPOINT='https://<resource>.services.ai.azure.com'   --from-literal=AZURE_OCR_API_KEY='<ocr-key>'   --from-literal=AZURE_OCR_MODEL='mistral-ocr-2503'   --from-literal=AZURE_OPENAI_ENDPOINT='https://<resource>.openai.azure.com'   --from-literal=AZURE_OPENAI_API_KEY='<openai-key>'   --from-literal=AZURE_OPENAI_DEPLOYMENT='<deployment>'
+kubectl create secret generic bankstmt-analyzer-credentials   --from-literal=API_KEY="$(openssl rand -hex 16)"   --from-literal=DATABASE_URL='postgres://user:pass@postgres:5432/bankstmt?sslmode=require'   --from-literal=AZURE_OCR_ENDPOINT='https://<resource>.services.ai.azure.com'   --from-literal=AZURE_OCR_API_KEY='<ocr-key>'   --from-literal=AZURE_OCR_MODEL='mistral-ocr-2503'   --from-literal=AZURE_OPENAI_ENDPOINT='https://<resource>.openai.azure.com'   --from-literal=AZURE_OPENAI_API_KEY='<openai-key>'   --from-literal=AZURE_OPENAI_DEPLOYMENT='<deployment>'
 ```
 
 `secret.yaml` in the chart directory is that same Secret as a manifest you

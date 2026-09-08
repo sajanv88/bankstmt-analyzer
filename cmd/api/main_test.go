@@ -102,6 +102,7 @@ func TestStartAPIShutsDownOnContextCancel(t *testing.T) {
 	cfg := config.Config{
 		Env:      config.EnvDevelopment,
 		HTTPAddr: addr,
+		APIKey:   "0123456789abcdef0123456789abcdef",
 		HTTP: config.HTTPConfig{
 			ReadHeaderTimeout:  time.Second,
 			WriteTimeout:       5 * time.Second,

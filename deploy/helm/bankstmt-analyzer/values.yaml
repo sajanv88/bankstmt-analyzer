@@ -24,8 +24,9 @@ config:
   # Name of an existing Secret holding the credentials. It must provide
   # these keys, which are the environment variable names the service reads:
   #
-  #   DATABASE_URL, AZURE_OCR_ENDPOINT, AZURE_OCR_API_KEY, AZURE_OCR_MODEL,
-  #   AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT
+  #   DATABASE_URL, API_KEY, AZURE_OCR_ENDPOINT, AZURE_OCR_API_KEY,
+  #   AZURE_OCR_MODEL, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY,
+  #   AZURE_OPENAI_DEPLOYMENT
   #
   # Recommended for anything real: it keeps credentials out of values files
   # and out of Helm's release history. Leave empty to have the chart create
@@ -33,6 +34,14 @@ config:
   existingSecret: ""
 
   databaseUrl: ""
+
+  # Guards every /api/v1 endpoint; callers present it in the api-key
+  # header. Exactly 32 hexadecimal characters — `openssl rand -hex 16`.
+  # Every workload validates it at startup, the migration Job included, so
+  # a Secret that omits it fails the pre-upgrade hook rather than leaving
+  # the API unauthenticated.
+  apiKey: ""
+
   azure:
     ocrEndpoint: ""
     ocrApiKey: ""

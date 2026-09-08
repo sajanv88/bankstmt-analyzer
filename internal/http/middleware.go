@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,11 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// APIKeyHeader is the header a caller presents its key in. It is exported
+// so the CORS allow-list and the tests name the same string the middleware
+// reads.
+const APIKeyHeader = "api-key"
 
 // requestLogger emits one structured line per request once it completes.
 //
@@ -79,6 +85,35 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 				)
 				WriteProblem(w, r, logger, NewProblem(http.StatusInternalServerError, "An unexpected error occurred."))
 			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireAPIKey rejects any request that does not carry the configured key
+// in the api-key header.
+//
+// The comparison is constant time. A byte-by-byte one returns sooner the
+// earlier it finds a difference, which over enough requests lets a caller
+// recover the key one character at a time. subtle.ConstantTimeCompare also
+// reports no match for unequal lengths, so an absent or truncated header
+// takes the same path as a wrong one.
+//
+// The rejection says only that a valid key is required. Distinguishing
+// "missing" from "malformed" from "wrong" tells an unauthenticated caller
+// how close they are, which is precisely what they should not learn. The
+// request logger records the 401 at warn level, so the operator still sees
+// it.
+func requireAPIKey(key string, logger *slog.Logger) func(http.Handler) http.Handler {
+	want := []byte(key)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got := []byte(r.Header.Get(APIKeyHeader))
+			if subtle.ConstantTimeCompare(got, want) != 1 {
+				WriteProblem(w, r, logger, NewProblem(http.StatusUnauthorized,
+					"A valid api-key header is required."))
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

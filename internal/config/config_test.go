@@ -15,6 +15,7 @@ import (
 func requiredEnv() map[string]string {
 	return map[string]string{
 		"DATABASE_URL":            "postgres://user:pass@localhost:5432/db",
+		"API_KEY":                 "0123456789abcdef0123456789abcdef",
 		"STORAGE_DIR":             "/var/lib/bankstmt",
 		"AZURE_OCR_ENDPOINT":      "https://ocr.example.com",
 		"AZURE_OCR_API_KEY":       "ocr-key",
@@ -32,7 +33,7 @@ func requiredEnv() map[string]string {
 // conformance suite, and without this the backend validation tests would
 // find credentials they were asserting were absent.
 var managedEnv = []string{
-	"ENV", "HTTP_ADDR", "LOG_LEVEL", "DATABASE_URL", "MIGRATE_ON_START",
+	"ENV", "HTTP_ADDR", "LOG_LEVEL", "DATABASE_URL", "MIGRATE_ON_START", "API_KEY",
 	"STORAGE_BACKEND", "STORAGE_DIR",
 	"S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_ACCESS_KEY_ID",
 	"S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE", "S3_PREFIX", "S3_TIMEOUT",
@@ -124,7 +125,12 @@ func TestSecretsListsCredentialsToScrub(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t,
-		[]string{"ocr-key", "openai-key", "postgres://user:pass@localhost:5432/db"},
+		[]string{
+			"ocr-key", "openai-key", "postgres://user:pass@localhost:5432/db",
+			// The API key is scrubbed too: an upstream error that echoed a
+			// rejected header would otherwise store it in failure_reason.
+			"0123456789abcdef0123456789abcdef",
+		},
 		cfg.Secrets(),
 	)
 }
@@ -221,4 +227,44 @@ func TestStorageBackendS3NeedsNoDirectory(t *testing.T) {
 	assert.Equal(t, "us-east-1", cfg.S3.Region)
 	assert.Contains(t, cfg.Secrets(), "secret-access-key",
 		"the S3 secret must be scrubbed from errors like the other credentials")
+}
+
+func TestLoadRejectsAnAPIKeyThatIsNot32HexCharacters(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{"too short", "0123456789abcdef"},
+		{"too long", "0123456789abcdef0123456789abcdef00"},
+		{"not hexadecimal", "0123456789abcdef0123456789abcdeg"},
+		{"32 characters of the wrong alphabet", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
+		{"empty", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, requiredEnv())
+			addEnv(t, map[string]string{"API_KEY": tc.key})
+
+			_, err := config.Load()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "API_KEY")
+			// The rejected value must not be quoted back into the error:
+			// it is a credential, and configuration errors get logged.
+			if tc.key != "" {
+				assert.NotContains(t, err.Error(), tc.key)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsUppercaseHexAPIKey(t *testing.T) {
+	setEnv(t, requiredEnv())
+	addEnv(t, map[string]string{"API_KEY": "0123456789ABCDEF0123456789ABCDEF"})
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "0123456789ABCDEF0123456789ABCDEF", cfg.APIKey)
 }

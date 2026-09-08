@@ -60,9 +60,11 @@ func newUploadHandler(
 //	@Param			files	formData	file	true	"Bank statement PDFs (repeat the field once per file)"
 //	@Success		202		{object}	CreateUploadResponse
 //	@Failure		400		{object}	Problem	"Malformed request, no files, too many files, or a file that is not a PDF"
+//	@Failure		401		{object}	Problem	"Missing or invalid api-key header"
 //	@Failure		413		{object}	Problem	"A file, or the request as a whole, is too large"
 //	@Failure		500		{object}	Problem
 //	@Failure		503		{object}	Problem	"The upload was stored but could not be queued for analysis"
+//	@Security		ApiKeyAuth
 //	@Router			/api/v1/uploads [post]
 func (h *uploadHandler) create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -265,8 +267,10 @@ func (h *uploadHandler) markUnqueued(ctx context.Context, uploadID uuid.UUID, ca
 //	@Param			id	path		string	true	"Upload id"	format(uuid)
 //	@Success		200	{object}	UploadStatusResponse
 //	@Failure		400	{object}	Problem	"The id is not a uuid"
+//	@Failure		401	{object}	Problem	"Missing or invalid api-key header"
 //	@Failure		404	{object}	Problem	"No such upload"
 //	@Failure		500	{object}	Problem
+//	@Security		ApiKeyAuth
 //	@Router			/api/v1/uploads/{id}/status [get]
 func (h *uploadHandler) status(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

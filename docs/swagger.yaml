@@ -276,6 +276,10 @@ paths:
             is not a PDF
           schema:
             $ref: '#/definitions/internal_http.Problem'
+        "401":
+          description: Missing or invalid api-key header
+          schema:
+            $ref: '#/definitions/internal_http.Problem'
         "413":
           description: A file, or the request as a whole, is too large
           schema:
@@ -288,6 +292,8 @@ paths:
           description: The upload was stored but could not be queued for analysis
           schema:
             $ref: '#/definitions/internal_http.Problem'
+      security:
+      - ApiKeyAuth: []
       summary: Upload bank statements
       tags:
       - uploads
@@ -314,6 +320,10 @@ paths:
           description: The id is not a uuid
           schema:
             $ref: '#/definitions/internal_http.Problem'
+        "401":
+          description: Missing or invalid api-key header
+          schema:
+            $ref: '#/definitions/internal_http.Problem'
         "404":
           description: No such upload
           schema:
@@ -322,6 +332,8 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/internal_http.Problem'
+      security:
+      - ApiKeyAuth: []
       summary: Get upload status
       tags:
       - uploads
@@ -364,6 +376,10 @@ paths:
           description: Invalid id or window parameters
           schema:
             $ref: '#/definitions/internal_http.Problem'
+        "401":
+          description: Missing or invalid api-key header
+          schema:
+            $ref: '#/definitions/internal_http.Problem'
         "404":
           description: No such upload
           schema:
@@ -376,6 +392,8 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/internal_http.Problem'
+      security:
+      - ApiKeyAuth: []
       summary: Get visualization data
       tags:
       - uploads
@@ -413,6 +431,14 @@ paths:
       - health
 produces:
 - application/json
+securityDefinitions:
+  ApiKeyAuth:
+    description: 32 hexadecimal characters, as produced by `openssl rand -hex 16`.
+      Required on every /api/v1 endpoint. The liveness and readiness probes do not
+      take it.
+    in: header
+    name: api-key
+    type: apiKey
 swagger: "2.0"
 tags:
 - description: Submitting statements and reading their analysis

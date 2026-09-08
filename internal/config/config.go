@@ -5,6 +5,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ const (
 	EnvDevelopment = "development"
 )
 
+// APIKeyLength is the exact number of hexadecimal characters API_KEY must
+// carry: 16 random bytes, which is what `openssl rand -hex 16` emits.
+const APIKeyLength = 32
+
 // Config is the fully resolved configuration for one process, whether it
 // runs the API, the worker, or both.
 type Config struct {
@@ -27,6 +32,16 @@ type Config struct {
 
 	// HTTPAddr is the listen address for the API server.
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
+
+	// APIKey guards every /api/v1 endpoint. Callers present it in the
+	// api-key header; the probes and the Swagger document stay open.
+	//
+	// It is required for every role, not just the API, for the same
+	// reason the Azure credentials are: one Secret feeds the API, the
+	// worker and the migration Job, and a variable that only some of them
+	// validate is one that gets dropped from the Secret and missed until
+	// the API restarts.
+	APIKey string `env:"API_KEY,required,notEmpty"`
 
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
@@ -178,8 +193,8 @@ func (c Config) IsProduction() bool { return c.Env == EnvProduction }
 // Secrets returns the values that must never appear in a stored failure
 // reason or a log line. The pipeline uses it to scrub upstream errors.
 func (c Config) Secrets() []string {
-	out := make([]string, 0, 4)
-	for _, s := range []string{c.OCR.APIKey, c.OpenAI.APIKey, c.DatabaseURL, c.S3.SecretAccessKey} {
+	out := make([]string, 0, 5)
+	for _, s := range []string{c.OCR.APIKey, c.OpenAI.APIKey, c.DatabaseURL, c.S3.SecretAccessKey, c.APIKey} {
 		if s != "" {
 			out = append(out, s)
 		}
@@ -189,6 +204,9 @@ func (c Config) Secrets() []string {
 
 func (c Config) validate() error {
 	if err := c.validateStorage(); err != nil {
+		return err
+	}
+	if err := validateAPIKey(c.APIKey); err != nil {
 		return err
 	}
 	if c.Upload.MaxFiles < 1 {
@@ -202,6 +220,20 @@ func (c Config) validate() error {
 	}
 	if c.Worker.MaxRetry < 0 {
 		return fmt.Errorf("config: WORKER_MAX_RETRY must be >= 0, got %d", c.Worker.MaxRetry)
+	}
+	return nil
+}
+
+// validateAPIKey enforces the 32-hexadecimal-character shape. The key
+// itself never appears in the error: a configuration failure is logged, and
+// a credential in a log line outlives the process that wrote it.
+func validateAPIKey(key string) error {
+	if len(key) != APIKeyLength {
+		return fmt.Errorf("config: API_KEY must be %d hexadecimal characters, got %d",
+			APIKeyLength, len(key))
+	}
+	if _, err := hex.DecodeString(key); err != nil {
+		return fmt.Errorf("config: API_KEY must be %d hexadecimal characters", APIKeyLength)
 	}
 	return nil
 }
